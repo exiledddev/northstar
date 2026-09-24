@@ -60,7 +60,8 @@ pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context) {
     row.add_space(2.0);
 
     let (mark, _) = row.allocate_exact_size(Vec2::splat(17.0), Sense::hover());
-    logo::paint(row.painter(), mark, 0.22 * anim::breathe(ctx, 6.0));
+    // no glow on the mark here: it has nothing to light
+    logo::paint(row.painter(), mark, 0.0);
     let painter = row.painter().clone();
     let (name, _) = row.allocate_exact_size(Vec2::new(96.0, TITLE_H), Sense::hover());
     theme::tracked_text(
@@ -100,9 +101,8 @@ enum Glyph {
 fn window_button(ui: &mut egui::Ui, glyph: Glyph, tint: egui::Color32) -> bool {
     let p = pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(30.0, 24.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     if hot > 0.01 {
-        theme::glow_rect(ui.painter(), rect.shrink2(Vec2::new(4.0, 3.0)), 6.0, tint, 9.0, hot * 0.55);
         ui.painter().rect_filled(
             rect.shrink2(Vec2::new(4.0, 3.0)),
             egui::Rounding::same(6.0),

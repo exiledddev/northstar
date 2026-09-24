@@ -432,18 +432,18 @@ fn page_body(
             );
             // a speech wears its speaker's colour, when characters have them
             let (fill, tick) = match voice {
-                Some(v) => (theme::wash(v, if p.dark { 8 } else { 12 }), v),
+                Some(v) => (theme::tint(v, if p.dark { 0.035 } else { 0.05 }), v),
                 None => (theme::element_band(element), theme::element_color(element)),
             };
             under.push(egui::Shape::rect_filled(band, egui::Rounding::same(5.0), fill));
             if element != Element::Action || voice.is_some() {
                 under.push(egui::Shape::rect_filled(
                     Rect::from_min_size(
-                        Pos2::new(band.left(), band.top() + 3.0),
-                        Vec2::new(2.0, (band.height() - 6.0).max(4.0)),
+                        Pos2::new(band.left(), band.top() + 4.0),
+                        Vec2::new(1.5, (band.height() - 8.0).max(4.0)),
                     ),
-                    egui::Rounding::same(1.0),
-                    theme::wash(tick, if p.dark { 150 } else { 170 }),
+                    egui::Rounding::same(0.75),
+                    theme::wash(tick, if p.dark { 85 } else { 105 }),
                 ));
             }
         }
@@ -554,7 +554,7 @@ fn page_body(
                 );
             }
         } else {
-            let tag = anim::ease(ui.ctx(), ("ns-tag", bid), focused || response.hovered(), 0.14);
+            let tag = anim::ease(ui.ctx(), ("ns-tag", bid), focused || response.hovered(), anim::HOVER);
             if tag > 0.02 {
                 let color = theme::element_color(element);
                 theme::tracked_text(
@@ -645,14 +645,11 @@ fn scene_star(ui: &egui::Ui, c: Pos2, bid: u64, live: bool, dimmed: bool) {
         theme::mix(p.sec_grad.1, theme::lighten(p.sec_grad.1, 0.18), lit),
         (255.0 * fade) as u8,
     );
-    theme::glow_star(
-        ui.painter(),
-        c,
-        r * 0.9,
-        b,
-        orb_r * 3.0 * (0.6 + 0.4 * lit),
-        (0.10 + 0.30 * lit * breath.max(0.7)) * fade,
-    );
+    // Only the scene you are in is lit, and only faintly: a halo on every
+    // heading would sit in the margin competing with the words.
+    if lit > 0.01 {
+        theme::glow_star(ui.painter(), c, r * 0.9, b, orb_r * 1.6, 0.16 * lit * breath.max(0.7) * fade);
+    }
     theme::grad_star(ui.painter(), c, r, a, b);
     // the bright core that makes the star brighter than its own halo
     theme::grad_star(

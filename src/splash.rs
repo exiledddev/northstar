@@ -92,7 +92,8 @@ impl Splash {
                     13.0,
                     p.sec_grad.1,
                     44.0,
-                    0.55 * alpha * (0.7 + 0.3 * anim::breathe(ui.ctx(), 2.6)),
+                    // the card's one focal point: soft, and still
+                    0.22 * alpha,
                 );
                 logo::paint(painter, mark, 0.0);
 

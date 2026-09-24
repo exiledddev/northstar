@@ -157,6 +157,8 @@ pub struct App {
     deck: alerts::Deck<Ask>,
     popover: Option<Popover>,
     popover_frame: u64,
+    /// Which category the Settings window is showing.
+    settings_tab: usize,
     menu_button_rect: Rect,
     settings_button_rect: Rect,
     element_button_rect: Rect,
@@ -164,6 +166,8 @@ pub struct App {
     page_rect: Rect,
     foot_rect: Rect,
     aside_rect: Rect,
+    /// Where each island down the right was actually drawn this frame.
+    aside_islands: Vec<Rect>,
 
     rail: Rail,
     find: Find,
@@ -264,6 +268,7 @@ impl App {
             deck: alerts::Deck::default(),
             popover: None,
             popover_frame: 0,
+            settings_tab: 0,
             menu_button_rect: Rect::NOTHING,
             settings_button_rect: Rect::NOTHING,
             element_button_rect: Rect::NOTHING,
@@ -271,6 +276,7 @@ impl App {
             page_rect: Rect::NOTHING,
             foot_rect: Rect::NOTHING,
             aside_rect: Rect::NOTHING,
+            aside_islands: Vec::new(),
             rail: Rail::default(),
             find: Find::default(),
             frame_no: 0,
@@ -1047,9 +1053,6 @@ impl App {
                 let fill = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * t, track.bottom()));
                 theme::grad_rect(ui.painter(), fill, 3.0, p.prim_grad.0, p.prim_grad.1, Vec2::new(1.0, 0.0));
             }
-            if t >= 1.0 {
-                theme::glow_rect(ui.painter(), track, 2.5, p.sec, 10.0, 0.5);
-            }
             resp.on_hover_text(format!(
                 "Session goal: {} of {goal} words",
                 self.session_words.max(0)
@@ -1407,7 +1410,7 @@ impl App {
         // filed under its section's header, drawn in from its edge
         let rect = Rect::from_min_max(Pos2::new(slot.left() + INDENT, slot.top()), slot.max);
         let _ = ui.interact(rect, row_id(&e.path), Sense::hover());
-        let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || selected, 0.16);
+        let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || selected, anim::HOVER);
 
         let fill = if selected {
             p.primary_quiet
@@ -1453,7 +1456,7 @@ impl App {
 
         // the star and the bin light *themselves* up rather than sitting on a
         // lozenge
-        let star_hot = anim::ease(ui.ctx(), star_resp.id, star_resp.hovered(), 0.14);
+        let star_hot = anim::ease(ui.ctx(), star_resp.id, star_resp.hovered(), anim::HOVER);
         if e.starred || hot > 0.02 {
             let lit = if e.starred { 1.0 } else { hot };
             icons::draw(
@@ -1467,7 +1470,7 @@ impl App {
                 },
             );
         }
-        let del_hot = anim::ease(ui.ctx(), del_resp.id, del_resp.hovered(), 0.14);
+        let del_hot = anim::ease(ui.ctx(), del_resp.id, del_resp.hovered(), anim::HOVER);
         if hot > 0.02 {
             icons::draw(
                 ui.painter(),
@@ -1574,6 +1577,7 @@ impl App {
             }))
             .show(ctx, |ui| {
                 self.aside_rect = ui.max_rect();
+                self.aside_islands.clear();
                 // Two islands down the right, with the same gap of backdrop
                 // between them as everywhere else: the script's details on
                 // top, the navigator under it. Whichever is alone fills the
@@ -1586,7 +1590,7 @@ impl App {
                         // never more than a little under half the column, so
                         // the navigator under it always has room to work
                         let cap = (ui.available_height() * 0.46 - 28.0).max(120.0);
-                        island.show(ui, |ui| {
+                        let r = island.show(ui, |ui| {
                             ui.set_width(ui.available_width());
                             egui::ScrollArea::vertical()
                                 .id_salt("ns-details")
@@ -1597,22 +1601,36 @@ impl App {
                                     self.details_panel(ui);
                                 });
                         });
+                        self.aside_islands.push(r.response.rect);
                     } else {
-                        island.show(ui, |ui| {
+                        let r = island.show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
-                            self.details_panel(ui);
+                            let room = ui.available_height();
+                            egui::ScrollArea::vertical()
+                                .id_salt("ns-details")
+                                .max_height(room)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    ui.set_max_width(ui.available_width() - 6.0);
+                                    self.details_panel(ui);
+                                });
                         });
+                        self.aside_islands.push(r.response.rect);
                     }
                 }
                 if nav {
-                    theme::island_frame(theme::R_ISLAND)
+                    let r = theme::island_frame(theme::R_ISLAND)
                         .inner_margin(egui::Margin::symmetric(12.0, 14.0))
                         .show(ui, |ui| {
                             ui.set_min_size(ui.available_size());
                             let both = self.settings.show_scenes && self.settings.show_cast;
                             if self.settings.show_scenes {
                                 let h = if both {
-                                    (ui.available_height() * 0.58).max(90.0).min(ui.available_height() - 60.0)
+                                    // the cast under it needs its heading and
+                                    // summary at the least
+                                    (ui.available_height() * 0.58)
+                                        .min(ui.available_height() - 120.0)
+                                        .max(60.0)
                                 } else {
                                     ui.available_height()
                                 };
@@ -1631,9 +1649,24 @@ impl App {
                                 ui::separator(ui);
                             }
                             if self.settings.show_cast {
-                                self.cast_panel(ui);
+                                // drawn into exactly the room that is left and
+                                // clipped to it, so it can never make the
+                                // island taller than the column
+                                let room = Rect::from_min_size(
+                                    ui.cursor().min,
+                                    Vec2::new(ui.available_width(), ui.available_height().max(0.0)),
+                                );
+                                let mut child = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(room)
+                                        .layout(Layout::top_down(Align::Min)),
+                                );
+                                child.set_clip_rect(room.intersect(ui.clip_rect()));
+                                self.cast_panel(&mut child);
+                                ui.allocate_rect(room, Sense::hover());
                             }
                         });
+                    self.aside_islands.push(r.response.rect);
                 }
             });
     }
@@ -1782,7 +1815,7 @@ impl App {
                     let w = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 38.0), Sense::click());
                     let is_live = live == Some(i);
-                    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+                    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
 
                     // The live scene gets the editor's own light — a wash that
                     // fades away to the right, and a short bar in the accent —
@@ -1813,14 +1846,18 @@ impl App {
                     dots.push(cy);
                     let r = if is_live { 5.6 } else { 4.4 };
                     let tint = sc.tint.map(|t| p.group(t));
-                    theme::glow_star(
-                        ui.painter(),
-                        Pos2::new(left, cy),
-                        r,
-                        tint.unwrap_or(p.sec_grad.1),
-                        13.0,
-                        0.10 + 0.22 * anim::ease(ui.ctx(), resp.id.with("lit"), is_live, 0.22),
-                    );
+                    // only the scene you are in is lit, and faintly
+                    let lit = anim::ease(ui.ctx(), resp.id.with("lit"), is_live, 0.26);
+                    if lit > 0.01 {
+                        theme::glow_star(
+                            ui.painter(),
+                            Pos2::new(left, cy),
+                            r,
+                            tint.unwrap_or(p.sec_grad.1),
+                            10.0,
+                            0.14 * lit,
+                        );
+                    }
                     match tint {
                         Some(t) => theme::grad_star(ui.painter(), Pos2::new(left, cy), r, theme::darken(t, 0.2), theme::lighten(t, 0.2)),
                         None => theme::grad_star(ui.painter(), Pos2::new(left, cy), r, p.sec_grad.0, p.sec_grad.1),
@@ -1929,11 +1966,30 @@ impl App {
         let mut jump: Option<(String, u64)> = None;
         let cast = self.layout.cast.clone();
         let voices = self.voices();
-        // the balance line and its bar only when there is room for them and
-        // at least a row of the list; the list gives way before anything
-        // runs past the island
-        let show_balance = ui.available_height() > 110.0;
-        let list_h = (ui.available_height() - if show_balance { 46.0 } else { 0.0 }).max(0.0);
+        // How much of the script is talk, straight under the heading — a
+        // summary belongs with its title, not stranded at the foot of a
+        // list that may only have one name in it.
+        let d = self.layout.dialogue;
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!("dialogue {:.0}%  ·  the rest {:.0}%", d * 100.0, (1.0 - d) * 100.0))
+                    .font(theme::font_mono(theme::T_MICRO))
+                    .color(p.text_faint),
+            );
+        });
+        ui.add_space(-2.0);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 8.0), Sense::hover());
+        let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width() - 8.0, 4.0));
+        ui.painter()
+            .rect_filled(track, egui::Rounding::same(2.0), theme::wash(p.text_faint, 45));
+        if d > 0.0 {
+            let fill = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * d, track.bottom()));
+            theme::grad_rect(ui.painter(), fill, 2.0, p.prim_grad.0, p.prim_grad.1, Vec2::new(1.0, 0.0));
+        }
+        ui.add_space(2.0);
+        // the list takes exactly what is left, and scrolls within it
+        let list_h = ui.available_height().max(0.0);
         egui::ScrollArea::vertical()
             .id_salt("ns-cast")
             .auto_shrink([false; 2])
@@ -1943,7 +1999,7 @@ impl App {
                 for (k, c) in cast.iter().enumerate() {
                     let w = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
-                    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.12);
+                    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
                     if hot > 0.02 {
                         ui.painter().rect_filled(
                             rect,
@@ -1993,30 +2049,6 @@ impl App {
             *self.cast_cursor.entry(name).or_insert(0) += 1;
             self.mode = Mode::Write;
             self.ed.jump_to(id);
-        }
-
-        if !show_balance {
-            return;
-        }
-        // the balance of the script: how much of it is talk
-        ui.add_space(8.0);
-        let d = self.layout.dialogue;
-        ui.label(
-            egui::RichText::new(format!(
-                "dialogue {:.0}% · the rest {:.0}%",
-                d * 100.0,
-                (1.0 - d) * 100.0
-            ))
-            .font(theme::font_mono(theme::T_MICRO))
-            .color(p.text_faint),
-        );
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 10.0), Sense::hover());
-        let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 5.0));
-        ui.painter()
-            .rect_filled(track, egui::Rounding::same(3.0), theme::wash(p.text_faint, 55));
-        if d > 0.0 {
-            let fill = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * d, track.bottom()));
-            theme::grad_rect(ui.painter(), fill, 3.0, p.prim_grad.0, p.prim_grad.1, Vec2::new(1.0, 0.0));
         }
     }
 
@@ -2284,19 +2316,14 @@ impl App {
     }
 
     fn read_page(&mut self, ui: &mut egui::Ui) {
-        let mut jump = None;
-        egui::ScrollArea::vertical()
-            .id_salt("ns-pages")
-            .auto_shrink([false; 2])
-            .show(ui, |ui| {
-                let voices = if self.settings.character_colors_reading { self.voices() } else { None };
-                jump = pages::show(ui, &self.doc, &mut self.pages, self.settings.scene_numbers, voices.as_ref());
-            });
+        let voices = if self.settings.character_colors_reading { self.voices() } else { None };
+        let jump = pages::show(ui, &self.doc, &mut self.pages, self.settings.scene_numbers, voices.as_ref());
         if let Some(id) = jump {
             self.mode = Mode::Write;
             self.ed.jump_to(id);
         }
     }
+
 
     // ---------- find & replace ----------
 
@@ -2338,7 +2365,7 @@ impl App {
             .show(ctx, |ui| {
                 let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
                 // glass: it floats over the work
-                theme::glow_rect(ui.painter(), rect, theme::R_MD, p.primary, 16.0, 0.12);
+                theme::lift_shadow(ui.painter(), rect, theme::R_MD, 1.0);
                 theme::glass_surface(ui.painter(), rect, theme::R_MD, 0.96);
                 let inner = rect.shrink2(Vec2::new(14.0, 8.0));
                 let mut child = ui.new_child(
@@ -2464,6 +2491,11 @@ impl App {
     // ---------- popovers ----------
 
     fn popovers(&mut self, ctx: &egui::Context) {
+        if self.popover != Some(Popover::Settings) {
+            // seeded shut, so the window rises again every time it opens
+            ctx.animate_bool_with_time(egui::Id::new("ns-settings-veil"), false, 0.0);
+            ctx.animate_bool_with_time(egui::Id::new("ns-settings-rise"), false, 0.0);
+        }
         match self.popover {
             Some(Popover::Menu) => self.more_menu(ctx),
             Some(Popover::Settings) => self.settings_panel(ctx),
@@ -2689,375 +2721,492 @@ impl App {
         self.close_popover_if_outside(ctx, &[area.rect, self.element_button_rect]);
     }
 
+    /// Settings, as a window of its own over the app — the categories down
+    /// the left, the one you are in on the right. It opens on a short ease,
+    /// dims what is behind it, and closes with Esc, its close button, or a
+    /// click outside it.
     fn settings_panel(&mut self, ctx: &egui::Context) {
         let p = pal();
         let screen = ctx.screen_rect();
         let before = self.settings.clone();
-        let anchor = self.settings_button_rect;
-        let tess = storage::tesseract_settings_path().exists();
-        let area = egui::Area::new(egui::Id::new("ns-settings"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(Pos2::new(
-                (anchor.right() - 330.0).max(screen.left() + 8.0),
-                theme::TOPBAR_H + 2.0,
-            ))
+        const TABS: [(&str, Icon); 7] = [
+            ("Appearance", Icon::Palette),
+            ("The page", Icon::File),
+            ("Colour", Icon::Eye),
+            ("Panels", Icon::Sidebar),
+            ("Writing & saving", Icon::Pencil),
+            ("YouTrack", Icon::External),
+            ("About", Icon::Info),
+        ];
+
+        // the room behind goes quiet
+        let veil = anim::ease(ctx, "ns-settings-veil", true, 0.24);
+        let mut close = false;
+        // The scrim sits a layer below the window. Two areas on one layer are
+        // ordered by which was clicked last — click the scrim once and it
+        // would come up over the window the next time it opened.
+        egui::Area::new(egui::Id::new("ns-settings-scrim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .interactable(true)
             .show(ctx, |ui| {
-                ui::popover_frame()
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .show(ui, |ui| {
-                        ui.set_width(304.0);
-                        ui.horizontal(|ui| {
-                            icons::show(ui, Icon::Settings, 14.0, p.primary);
-                            ui.label(
-                                egui::RichText::new("Settings")
-                                    .font(theme::font_semi(theme::T_H))
-                                    .color(p.text),
-                            );
-                        });
-                        ui.add_space(6.0);
+                let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+                ui.painter().rect_filled(
+                    rect,
+                    egui::Rounding::same(if chrome::maximized(ctx) { 0.0 } else { theme::R_WINDOW }),
+                    Color32::from_black_alpha((120.0 * veil) as u8),
+                );
+                if resp.clicked() && self.frame_no > self.popover_frame + 1 {
+                    close = true;
+                }
+            });
 
-                        // An Area sizes itself from what it drew last frame, so
-                        // give the scroll area its room outright.
-                        // the popover's own header and margins, and a gap of
-                        // backdrop under it, all come out of the window's height
-                        let tall = (screen.height() - theme::TOPBAR_H - 58.0 - 44.0 - theme::GAP)
-                            .clamp(200.0, 780.0);
-                        let (body, _) =
-                            ui.allocate_exact_size(Vec2::new(304.0, tall), Sense::hover());
-                        let mut ui = ui.new_child(
-                            egui::UiBuilder::new()
-                                .max_rect(body)
-                                .layout(Layout::top_down(Align::Min)),
-                        );
-                        let ui = &mut ui;
-                        egui::ScrollArea::vertical()
-                                .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                // room on the right for the floating scroll bar,
-                                // so it never lies over a slider's end
-                                ui.set_max_width(ui.available_width() - 12.0);
-                                ui::section(ui, "Theme");
-                                let mut v = self.settings.match_tesseract;
-                                if ui::toggle_row(
-                                    ui,
-                                    "Match Tesseract",
-                                    if tess {
-                                        "Take theme, glass and motion from Tesseract, live."
-                                    } else {
-                                        "Tesseract has not been run on this machine yet."
-                                    },
-                                    &mut v,
-                                ) {
-                                    self.settings.match_tesseract = v;
-                                    self.tess_seen = None;
-                                    self.tess_checked = None;
-                                }
-                                ui.add_space(4.0);
-                                let mut picked = None;
-                                for t in theme::ThemeId::ALL {
-                                    if theme_row(ui, t, self.settings.theme == t, !self.settings.light_mode) {
-                                        picked = Some(t);
-                                    }
-                                }
-                                if let Some(t) = picked {
-                                    self.settings.theme = t;
-                                    self.stop_matching();
-                                }
-                                ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    let dark = !self.settings.light_mode;
-                                    icons::show(ui, if dark { Icon::Moon } else { Icon::Sun }, 14.0, p.text_dim);
-                                    ui.label(
-                                        egui::RichText::new(if dark { "Dark" } else { "Light" })
-                                            .font(theme::font_med(theme::T_SM))
-                                            .color(p.text),
-                                    );
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let mut on = dark;
-                                        if ui::toggle(ui, &mut on) {
-                                            self.settings.light_mode = !on;
-                                            self.stop_matching();
-                                        }
-                                    });
-                                });
+        let size = Vec2::new(
+            (screen.width() - 80.0).clamp(560.0, 780.0),
+            (screen.height() - 80.0).clamp(420.0, 620.0),
+        );
+        // arrives with a short settle, around 300 ms, and no more
+        let t = anim::ease(ctx, "ns-settings-rise", true, 0.30);
+        let scale = 0.97 + 0.03 * t;
+        let rect = Rect::from_center_size(screen.center(), size * scale);
+        let tab = self.settings_tab.min(TABS.len() - 1);
 
-                                ui::separator(ui);
-                                ui::section(ui, "Motion & glass");
-                                let mut v = self.settings.animations;
-                                if ui::toggle_row(ui, "Animations", "Every transition in the app, at once.", &mut v) {
-                                    self.settings.animations = v;
-                                    self.stop_matching();
-                                }
-                                ui.add_space(6.0);
-                                ui.label(
-                                    egui::RichText::new("Window blur")
-                                        .font(theme::font_med(theme::T_SM))
-                                        .color(p.text),
-                                );
-                                ui.horizontal(|ui| {
-                                    for m in BlurMode::ALL {
-                                        let on = self.settings.blur == m;
-                                        if ui::button(ui, m.label(), None, on) && !on {
-                                            self.settings.blur = m;
-                                            self.stop_matching();
-                                        }
-                                    }
-                                });
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} · {}",
-                                        blur::session_name(),
-                                        self.blur.state.describe()
-                                    ))
-                                    .font(theme::font(theme::T_MICRO))
-                                    .color(p.text_faint),
-                                );
-                                ui.add_space(6.0);
-                                ui.label(
-                                    egui::RichText::new("Glass")
-                                        .font(theme::font_med(theme::T_SM))
-                                        .color(p.text),
-                                );
-                                let mut g = self.settings.glass_opacity;
-                                if ui::slider(ui, &mut g, 0.35..=1.0) {
-                                    self.settings.glass_opacity = g;
-                                    self.stop_matching();
-                                }
-                                ui.add_space(6.0);
-                                ui.label(
-                                    egui::RichText::new(format!("Interface size · {:.0}%", self.settings.font_scale * 100.0))
-                                        .font(theme::font_med(theme::T_SM))
-                                        .color(p.text),
-                                );
-                                let mut fs = self.settings.font_scale;
-                                if ui::slider(ui, &mut fs, 0.8..=1.4) {
-                                    self.settings.font_scale = (fs * 20.0).round() / 20.0;
-                                }
+        egui::Area::new(egui::Id::new("ns-settings"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                ui.set_opacity(0.2 + 0.8 * t);
+                let (win, _) = ui.allocate_exact_size(rect.size(), Sense::click());
+                // a window you work in is solid, lifted on a layered shadow
+                theme::lift_shadow(ui.painter(), win, theme::R_ISLAND, 1.0);
+                ui.painter().rect_filled(win, egui::Rounding::same(theme::R_ISLAND), p.solid);
+                ui.painter().rect_stroke(
+                    win.shrink(0.5),
+                    egui::Rounding::same(theme::R_ISLAND),
+                    Stroke::new(1.0_f32, theme::wash(Color32::WHITE, if p.dark { 18 } else { 120 })),
+                );
 
-                                ui::separator(ui);
-                                ui::section(ui, "The page");
-                                ui.label(
-                                    egui::RichText::new(format!("Page text · {:.0} pt · Ctrl+plus / minus", self.settings.page_px))
-                                        .font(theme::font_med(theme::T_SM))
-                                        .color(p.text),
-                                );
-                                let mut px = self.settings.page_px;
-                                if ui::slider(ui, &mut px, 11.0..=26.0) {
-                                    self.settings.page_px = px.round();
-                                }
-                                ui.add_space(4.0);
-                                let mut v = self.settings.page_breaks;
-                                if ui::toggle_row(ui, "Page breaks", "Where each printed page begins, as you write.", &mut v) {
-                                    self.settings.page_breaks = v;
-                                }
-                                let mut v = self.settings.scene_numbers;
-                                if ui::toggle_row(ui, "Scene numbers", "In the gutter, the navigator and the PDF.", &mut v) {
-                                    self.settings.scene_numbers = v;
-                                }
-                                let mut v = self.settings.smart_type;
-                                if ui::toggle_row(ui, "SmartType", "Finish names, places and transitions. Tab takes it.", &mut v) {
-                                    self.settings.smart_type = v;
-                                }
-                                let mut v = self.settings.typewriter;
-                                if ui::toggle_row(ui, "Typewriter scrolling", "Keep the line you are on mid-page.", &mut v) {
-                                    self.settings.typewriter = v;
-                                }
+                // ---- the head ----
+                let head = Rect::from_min_size(win.min, Vec2::new(win.width(), 56.0));
+                let mut h = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(head.shrink2(Vec2::new(20.0, 0.0)))
+                        .layout(Layout::left_to_right(Align::Center)),
+                );
+                h.spacing_mut().item_spacing.x = 10.0;
+                icons::show(&mut h, Icon::Settings, 16.0, p.primary_light);
+                h.label(
+                    egui::RichText::new("Settings")
+                        .font(theme::font_semi(theme::T_H))
+                        .color(p.text),
+                );
+                h.label(
+                    egui::RichText::new(format!("{} · {}", pal().id.name(), if p.dark { "dark" } else { "light" }))
+                        .font(theme::font(theme::T_CAP))
+                        .color(p.text_faint),
+                );
+                h.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui::icon_button(ui, Icon::Close, "Close · Esc", 28.0) {
+                        close = true;
+                    }
+                });
 
-                                ui::separator(ui);
-                                ui::section(ui, "Colour");
-                                let mut v = self.settings.element_colors;
-                                if ui::toggle_row(
-                                    ui,
-                                    "Element colours",
-                                    "A faint band behind each block, one colour per element. Never in Reading mode or on paper.",
-                                    &mut v,
-                                ) {
-                                    self.settings.element_colors = v;
-                                }
-                                let mut v = self.settings.character_colors;
-                                if ui::toggle_row(
-                                    ui,
-                                    "Character colours",
-                                    "Each speaker's name and lines in a colour of their own.",
-                                    &mut v,
-                                ) {
-                                    self.settings.character_colors = v;
-                                }
-                                if self.settings.character_colors {
-                                    let mut v = self.settings.character_colors_reading;
-                                    if ui::toggle_row(ui, "…in Reading mode too", "", &mut v) {
-                                        self.settings.character_colors_reading = v;
-                                    }
-                                    ui.horizontal(|ui| {
-                                        // a live sample of the first few speakers
-                                        let voices = theme::character_colors(
-                                            &self.layout.speakers,
-                                            self.settings.colour_seed,
-                                        );
-                                        for name in self.layout.speakers.iter().take(8) {
-                                            if let Some(c) = voices.get(name) {
-                                                let (r, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
-                                                ui.painter().circle_filled(r.center(), 5.0, *c);
-                                                resp.on_hover_text(name.clone());
-                                            }
-                                        }
-                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            if ui::button(ui, "Shuffle", Some(Icon::Refresh), false) {
-                                                self.settings.colour_seed = self.settings.colour_seed.wrapping_add(1);
-                                            }
-                                        });
-                                    });
-                                }
+                // ---- the categories ----
+                let nav = Rect::from_min_max(
+                    Pos2::new(win.left() + 14.0, head.bottom()),
+                    Pos2::new(win.left() + 14.0 + 184.0, win.bottom() - 14.0),
+                );
+                let mut n = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(nav)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                n.spacing_mut().item_spacing.y = 2.0;
+                let mut picked = None;
+                for (k, (label, icon)) in TABS.iter().enumerate() {
+                    if settings_tab_row(&mut n, label, *icon, k == tab) {
+                        picked = Some(k);
+                    }
+                }
+                if let Some(k) = picked {
+                    self.settings_tab = k;
+                }
+                // foot of the categories: what this is
+                let foot = Pos2::new(nav.left() + 10.0, nav.bottom() - 10.0);
+                ui.painter().text(
+                    foot,
+                    egui::Align2::LEFT_BOTTOM,
+                    format!("Northstar {}", env!("CARGO_PKG_VERSION")),
+                    theme::font_mono(theme::T_MICRO),
+                    p.text_faint,
+                );
 
-                                ui::separator(ui);
-                                ui::section(ui, "Panels");
-                                for (label, hint, key) in [
-                                    ("Details", "Title page and figures · Ctrl+I", 0),
-                                    ("Scenes", "The navigator · Ctrl+Shift+I", 1),
-                                    ("Cast", "Who speaks, and how much", 2),
-                                    ("Library", "Your scripts · Ctrl+B", 3),
-                                ] {
-                                    let slot = match key {
-                                        0 => &mut self.settings.show_details,
-                                        1 => &mut self.settings.show_scenes,
-                                        2 => &mut self.settings.show_cast,
-                                        _ => &mut self.settings.show_library,
-                                    };
-                                    let mut v = *slot;
-                                    if ui::toggle_row(ui, label, hint, &mut v) {
-                                        *slot = v;
-                                    }
-                                }
-
-                                ui::separator(ui);
-                                ui::section(ui, "Library");
-                                let mut v = self.settings.starred_first;
-                                if ui::toggle_row(ui, "Starred at the top", "", &mut v) {
-                                    self.settings.starred_first = v;
-                                }
-                                ui.label(
-                                    egui::RichText::new("Sort by")
-                                        .font(theme::font_med(theme::T_SM))
-                                        .color(p.text),
-                                );
-                                ui.horizontal_wrapped(|ui| {
-                                    for s in SortBy::ALL {
-                                        let on = self.settings.sort_by == s;
-                                        if ui::button(ui, s.label(), None, on) && !on {
-                                            self.settings.sort_by = s;
-                                        }
-                                    }
-                                });
-
-                                ui::separator(ui);
-                                ui::section(ui, "Writing");
-                                ui.label(
-                                    egui::RichText::new(if self.settings.session_goal == 0 {
-                                        "Session goal · off".to_string()
-                                    } else {
-                                        format!("Session goal · {} words", self.settings.session_goal)
-                                    })
-                                    .font(theme::font_med(theme::T_SM))
-                                    .color(p.text),
-                                );
-                                let mut g = self.settings.session_goal as f32;
-                                if ui::slider(ui, &mut g, 0.0..=3000.0) {
-                                    self.settings.session_goal = ((g / 50.0).round() * 50.0) as u32;
-                                }
-
-                                ui::separator(ui);
-                                ui::section(ui, "Starting up & saving");
-                                let mut v = self.settings.splash;
-                                if ui::toggle_row(ui, "Splash screen", "", &mut v) {
-                                    self.settings.splash = v;
-                                }
-                                ui.label(
-                                    egui::RichText::new("After Quick Export")
-                                        .font(theme::font_med(theme::T_SM))
-                                        .color(p.text),
-                                );
-                                ui.horizontal(|ui| {
-                                    for a in AfterExport::ALL {
-                                        let on = self.settings.after_export == a;
-                                        if ui::button(ui, a.label(), None, on) && !on {
-                                            self.settings.after_export = a;
-                                        }
-                                    }
-                                });
-                                ui.add_space(4.0);
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Autosave after {} ms of quiet",
-                                        self.settings.autosave_ms
-                                    ))
-                                    .font(theme::font_med(theme::T_SM))
-                                    .color(p.text),
-                                );
-                                let mut ms = self.settings.autosave_ms as f32;
-                                if ui::slider(ui, &mut ms, 200.0..=5000.0) {
-                                    self.settings.autosave_ms = (ms / 50.0).round() as u64 * 50;
-                                }
-
-                                ui::separator(ui);
-                                ui::section(ui, "YouTrack");
-                                ui.label(
-                                    egui::RichText::new("Where View on YouTrack goes")
-                                        .font(theme::font(theme::T_CAP))
-                                        .color(p.text_faint),
-                                );
-                                ui.add_space(2.0);
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.settings.youtrack_url)
-                                        .id(egui::Id::new("ns-youtrack-url"))
-                                        .desired_width(f32::INFINITY)
-                                        .font(theme::font_mono(theme::T_CAP))
-                                        .margin(egui::Margin::symmetric(10.0, 6.0))
-                                        .hint_text(crate::settings::DEFAULT_YOUTRACK),
-                                );
-                                if self.settings.youtrack_url.trim() != crate::settings::DEFAULT_YOUTRACK {
-                                    ui.add_space(2.0);
-                                    if ui::chip_button(ui, "reset to the default") {
-                                        self.settings.youtrack_url = crate::settings::DEFAULT_YOUTRACK.to_string();
-                                    }
-                                }
-
-                                ui::separator(ui);
-                                ui::section(ui, "Where things live");
-                                ui.label(
-                                    egui::RichText::new(short_home(&storage::scripts_dir()))
-                                        .font(theme::font_mono(theme::T_MICRO))
-                                        .color(p.text_faint),
-                                );
-                                ui.add_space(6.0);
-                                ui.horizontal(|ui| {
-                                    if ui::button(ui, "Open library", Some(Icon::Folder), false) {
-                                        storage::open_with_desktop(&storage::scripts_dir());
-                                    }
-                                    if ui::button(ui, "Exports", Some(Icon::Download), false) {
-                                        storage::open_with_desktop(&storage::exports_dir());
-                                    }
-                                });
-                                ui.add_space(8.0);
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "Page font: {} · Northstar {} · MarkedExiled Software",
-                                        theme::PAGE_FONT_NAME,
-                                        env!("CARGO_PKG_VERSION")
-                                    ))
-                                    .font(theme::font(theme::T_MICRO))
-                                    .color(p.text_faint),
-                                );
-                            });
+                // ---- the pane ----
+                let pane = Rect::from_min_max(
+                    Pos2::new(nav.right() + 14.0, head.bottom()),
+                    Pos2::new(win.right() - 10.0, win.bottom() - 10.0),
+                );
+                ui.painter().rect_filled(
+                    pane.expand2(Vec2::new(0.0, 0.0)),
+                    egui::Rounding::same(theme::R_MD),
+                    p.solid_hi,
+                );
+                let mut pane_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(pane.shrink2(Vec2::new(18.0, 14.0)))
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                pane_ui.label(
+                    egui::RichText::new(TABS[tab].0)
+                        .font(theme::font_semi(theme::T_H - 1.0))
+                        .color(p.text),
+                );
+                pane_ui.add_space(4.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(("ns-settings-pane", tab))
+                    .auto_shrink([false, false])
+                    .show(&mut pane_ui, |ui| {
+                        // room on the right for the floating scroll bar
+                        ui.set_max_width(ui.available_width() - 14.0);
+                        self.settings_body(ui, tab);
+                        ui.add_space(8.0);
                     });
-            })
-            .response;
+            });
 
+        if close {
+            self.popover = None;
+        }
         if self.settings != before {
             self.ed.font_px = self.settings.page_px;
             self.theme_dirty = true;
             self.save_settings();
         }
-        self.close_popover_if_outside(ctx, &[area.rect, self.settings_button_rect]);
+    }
+
+    /// One category of settings, drawn into the right-hand pane.
+    fn settings_body(&mut self, ui: &mut egui::Ui, tab: usize) {
+        let p = pal();
+        let tess = storage::tesseract_settings_path().exists();
+        let _ = tess;
+        match tab {
+            0 => {
+            ui::section(ui, "Theme");
+            let mut v = self.settings.match_tesseract;
+            if ui::toggle_row(
+                ui,
+                "Match Tesseract",
+                if tess {
+                    "Take theme, glass and motion from Tesseract, live."
+                } else {
+                    "Tesseract has not been run on this machine yet."
+                },
+                &mut v,
+            ) {
+                self.settings.match_tesseract = v;
+                self.tess_seen = None;
+                self.tess_checked = None;
+            }
+            ui.add_space(4.0);
+            let mut picked = None;
+            for t in theme::ThemeId::ALL {
+                if theme_row(ui, t, self.settings.theme == t, !self.settings.light_mode) {
+                    picked = Some(t);
+                }
+            }
+            if let Some(t) = picked {
+                self.settings.theme = t;
+                self.stop_matching();
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let dark = !self.settings.light_mode;
+                icons::show(ui, if dark { Icon::Moon } else { Icon::Sun }, 14.0, p.text_dim);
+                ui.label(
+                    egui::RichText::new(if dark { "Dark" } else { "Light" })
+                        .font(theme::font_med(theme::T_SM))
+                        .color(p.text),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let mut on = dark;
+                    if ui::toggle(ui, &mut on) {
+                        self.settings.light_mode = !on;
+                        self.stop_matching();
+                    }
+                });
+            });
+
+                        ui::separator(ui);
+            ui::section(ui, "Motion & glass");
+            let mut v = self.settings.animations;
+            if ui::toggle_row(ui, "Animations", "Every transition in the app, at once.", &mut v) {
+                self.settings.animations = v;
+                self.stop_matching();
+            }
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("Window blur")
+                    .font(theme::font_med(theme::T_SM))
+                    .color(p.text),
+            );
+            ui.horizontal(|ui| {
+                for m in BlurMode::ALL {
+                    let on = self.settings.blur == m;
+                    if ui::button(ui, m.label(), None, on) && !on {
+                        self.settings.blur = m;
+                        self.stop_matching();
+                    }
+                }
+            });
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} · {}",
+                    blur::session_name(),
+                    self.blur.state.describe()
+                ))
+                .font(theme::font(theme::T_MICRO))
+                .color(p.text_faint),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new("Glass")
+                    .font(theme::font_med(theme::T_SM))
+                    .color(p.text),
+            );
+            let mut g = self.settings.glass_opacity;
+            if ui::slider(ui, &mut g, 0.35..=1.0) {
+                self.settings.glass_opacity = g;
+                self.stop_matching();
+            }
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!("Interface size · {:.0}%", self.settings.font_scale * 100.0))
+                    .font(theme::font_med(theme::T_SM))
+                    .color(p.text),
+            );
+            let mut fs = self.settings.font_scale;
+            if ui::slider(ui, &mut fs, 0.8..=1.4) {
+                self.settings.font_scale = (fs * 20.0).round() / 20.0;
+            }
+
+                        }
+            1 => {
+            ui.label(
+                egui::RichText::new(format!("Page text · {:.0} pt · Ctrl+plus / minus", self.settings.page_px))
+                    .font(theme::font_med(theme::T_SM))
+                    .color(p.text),
+            );
+            let mut px = self.settings.page_px;
+            if ui::slider(ui, &mut px, 11.0..=26.0) {
+                self.settings.page_px = px.round();
+            }
+            ui.add_space(4.0);
+            let mut v = self.settings.page_breaks;
+            if ui::toggle_row(ui, "Page breaks", "Where each printed page begins, as you write.", &mut v) {
+                self.settings.page_breaks = v;
+            }
+            let mut v = self.settings.scene_numbers;
+            if ui::toggle_row(ui, "Scene numbers", "In the gutter, the navigator and the PDF.", &mut v) {
+                self.settings.scene_numbers = v;
+            }
+            let mut v = self.settings.smart_type;
+            if ui::toggle_row(ui, "SmartType", "Finish names, places and transitions. Tab takes it.", &mut v) {
+                self.settings.smart_type = v;
+            }
+            let mut v = self.settings.typewriter;
+            if ui::toggle_row(ui, "Typewriter scrolling", "Keep the line you are on mid-page.", &mut v) {
+                self.settings.typewriter = v;
+            }
+
+                        }
+            2 => {
+            let mut v = self.settings.element_colors;
+            if ui::toggle_row(
+                ui,
+                "Element colours",
+                "A faint band behind each block, one colour per element. Never in Reading mode or on paper.",
+                &mut v,
+            ) {
+                self.settings.element_colors = v;
+            }
+            let mut v = self.settings.character_colors;
+            if ui::toggle_row(
+                ui,
+                "Character colours",
+                "Each speaker's name and lines in a colour of their own.",
+                &mut v,
+            ) {
+                self.settings.character_colors = v;
+            }
+            if self.settings.character_colors {
+                let mut v = self.settings.character_colors_reading;
+                if ui::toggle_row(ui, "…in Reading mode too", "", &mut v) {
+                    self.settings.character_colors_reading = v;
+                }
+                ui.horizontal(|ui| {
+                    // a live sample of the first few speakers
+                    let voices = theme::character_colors(
+                        &self.layout.speakers,
+                        self.settings.colour_seed,
+                    );
+                    for name in self.layout.speakers.iter().take(8) {
+                        if let Some(c) = voices.get(name) {
+                            let (r, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                            ui.painter().circle_filled(r.center(), 5.0, *c);
+                            resp.on_hover_text(name.clone());
+                        }
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui::button(ui, "Shuffle", Some(Icon::Refresh), false) {
+                            self.settings.colour_seed = self.settings.colour_seed.wrapping_add(1);
+                        }
+                    });
+                });
+            }
+
+                        }
+            3 => {
+            ui::section(ui, "Panels");
+            for (label, hint, key) in [
+                ("Details", "Title page and figures · Ctrl+I", 0),
+                ("Scenes", "The navigator · Ctrl+Shift+I", 1),
+                ("Cast", "Who speaks, and how much", 2),
+                ("Library", "Your scripts · Ctrl+B", 3),
+            ] {
+                let slot = match key {
+                    0 => &mut self.settings.show_details,
+                    1 => &mut self.settings.show_scenes,
+                    2 => &mut self.settings.show_cast,
+                    _ => &mut self.settings.show_library,
+                };
+                let mut v = *slot;
+                if ui::toggle_row(ui, label, hint, &mut v) {
+                    *slot = v;
+                }
+            }
+
+                        ui::separator(ui);
+            ui::section(ui, "Library");
+            let mut v = self.settings.starred_first;
+            if ui::toggle_row(ui, "Starred at the top", "", &mut v) {
+                self.settings.starred_first = v;
+            }
+            ui.label(
+                egui::RichText::new("Sort by")
+                    .font(theme::font_med(theme::T_SM))
+                    .color(p.text),
+            );
+            ui.horizontal_wrapped(|ui| {
+                for s in SortBy::ALL {
+                    let on = self.settings.sort_by == s;
+                    if ui::button(ui, s.label(), None, on) && !on {
+                        self.settings.sort_by = s;
+                    }
+                }
+            });
+
+                        }
+            4 => {
+            ui::section(ui, "Writing");
+            ui.label(
+                egui::RichText::new(if self.settings.session_goal == 0 {
+                    "Session goal · off".to_string()
+                } else {
+                    format!("Session goal · {} words", self.settings.session_goal)
+                })
+                .font(theme::font_med(theme::T_SM))
+                .color(p.text),
+            );
+            let mut g = self.settings.session_goal as f32;
+            if ui::slider(ui, &mut g, 0.0..=3000.0) {
+                self.settings.session_goal = ((g / 50.0).round() * 50.0) as u32;
+            }
+
+                        ui::separator(ui);
+            ui::section(ui, "Starting up & saving");
+            let mut v = self.settings.splash;
+            if ui::toggle_row(ui, "Splash screen", "", &mut v) {
+                self.settings.splash = v;
+            }
+            ui.label(
+                egui::RichText::new("After Quick Export")
+                    .font(theme::font_med(theme::T_SM))
+                    .color(p.text),
+            );
+            ui.horizontal(|ui| {
+                for a in AfterExport::ALL {
+                    let on = self.settings.after_export == a;
+                    if ui::button(ui, a.label(), None, on) && !on {
+                        self.settings.after_export = a;
+                    }
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Autosave after {} ms of quiet",
+                    self.settings.autosave_ms
+                ))
+                .font(theme::font_med(theme::T_SM))
+                .color(p.text),
+            );
+            let mut ms = self.settings.autosave_ms as f32;
+            if ui::slider(ui, &mut ms, 200.0..=5000.0) {
+                self.settings.autosave_ms = (ms / 50.0).round() as u64 * 50;
+            }
+
+                        }
+            5 => {
+            ui.label(
+                egui::RichText::new("Where View on YouTrack goes")
+                    .font(theme::font(theme::T_CAP))
+                    .color(p.text_faint),
+            );
+            ui.add_space(2.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut self.settings.youtrack_url)
+                    .id(egui::Id::new("ns-youtrack-url"))
+                    .desired_width(f32::INFINITY)
+                    .font(theme::font_mono(theme::T_CAP))
+                    .margin(egui::Margin::symmetric(10.0, 6.0))
+                    .hint_text(crate::settings::DEFAULT_YOUTRACK),
+            );
+            if self.settings.youtrack_url.trim() != crate::settings::DEFAULT_YOUTRACK {
+                ui.add_space(2.0);
+                if ui::chip_button(ui, "reset to the default") {
+                    self.settings.youtrack_url = crate::settings::DEFAULT_YOUTRACK.to_string();
+                }
+            }
+
+                        }
+            6 => {
+            ui::section(ui, "Where things live");
+            ui.label(
+                egui::RichText::new(short_home(&storage::scripts_dir()))
+                    .font(theme::font_mono(theme::T_MICRO))
+                    .color(p.text_faint),
+            );
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui::button(ui, "Open library", Some(Icon::Folder), false) {
+                    storage::open_with_desktop(&storage::scripts_dir());
+                }
+                if ui::button(ui, "Exports", Some(Icon::Download), false) {
+                    storage::open_with_desktop(&storage::exports_dir());
+                }
+            });
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Page font: {} · Northstar {} · MarkedExiled Software",
+                    theme::PAGE_FONT_NAME,
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .font(theme::font(theme::T_MICRO))
+                .color(p.text_faint),
+            );
+            }
+            _ => {}
+        }
     }
 
     /// A look chosen by hand here stops the look being taken from Tesseract.
@@ -3249,6 +3398,10 @@ impl App {
         if key != self.page_key {
             self.page_key = key;
             self.page_born = Instant::now();
+            if self.mode == Mode::Read {
+                // Reading mode opens on the page you were writing
+                self.pages.show_block = self.ed.focus_block;
+            }
         }
 
         self.refresh_layout(false);
@@ -3344,6 +3497,9 @@ impl App {
     pub fn debug_popover_open(&self) -> bool {
         self.popover.is_some()
     }
+    pub fn debug_settings_tab(&self) -> usize {
+        self.settings_tab
+    }
     pub fn debug_settings_open(&self) -> bool {
         self.popover == Some(Popover::Settings)
     }
@@ -3360,7 +3516,13 @@ impl App {
         self.cards.last_rects.get(n).copied()
     }
     pub fn debug_sheet_count(&self) -> usize {
-        self.pages.last_rects.len()
+        self.pages.sheets
+    }
+    pub fn debug_sheet_on_show(&self) -> usize {
+        self.pages.current
+    }
+    pub fn debug_sheet_rect(&self) -> Rect {
+        self.pages.sheet_rect
     }
     pub fn debug_page_rect(&self) -> Rect {
         self.page_rect
@@ -3417,6 +3579,9 @@ impl App {
     pub fn debug_aside_rect(&self) -> Rect {
         self.aside_rect
     }
+    pub fn debug_aside_islands(&self) -> Vec<Rect> {
+        self.aside_islands.clone()
+    }
     pub fn settings_mut(&mut self) -> &mut Settings {
         &mut self.settings
     }
@@ -3444,12 +3609,10 @@ impl eframe::App for App {
 fn new_script_button(ui: &mut egui::Ui, width: f32) -> bool {
     let p = pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.16);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
 
-    if hot > 0.02 {
-        // on hover it takes the stars' own gradient and glows with it
-        theme::glow_rect(ui.painter(), rect, theme::R_CTRL, p.sec, 14.0, hot);
-    }
+    // The primary action is told apart by contrast and colour, not by light:
+    // on hover it shifts into the stars' own gradient, with no glow.
     theme::grad_rect(
         ui.painter(),
         rect,
@@ -3495,7 +3658,7 @@ fn element_chip(ui: &mut egui::Ui, e: Element, on: bool) -> bool {
     );
     let w = galley.rect.width() + 26.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     theme::hover_surface(ui.painter(), rect, theme::R_SM, p.primary, hot, on);
     let dot = theme::element_color(e);
     ui.painter().circle_filled(
@@ -3541,7 +3704,7 @@ fn section_header(
     let p = pal();
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.12);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     let col = tint.unwrap_or(p.text_dim);
     if hot > 0.02 {
         ui.painter().rect_filled(
@@ -3616,7 +3779,7 @@ fn theme_row(ui: &mut egui::Ui, t: theme::ThemeId, on: bool, dark: bool) -> bool
     let sample = theme::palette(t, dark);
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || on, 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || on, anim::HOVER);
 
     ui.painter().rect_filled(
         rect,
@@ -3635,7 +3798,6 @@ fn theme_row(ui: &mut egui::Ui, t: theme::ThemeId, on: bool, dark: bool) -> bool
     let sw = Rect::from_min_size(rect.left_top() + Vec2::new(8.0, 7.0), Vec2::new(34.0, 20.0));
     theme::grad_rect(ui.painter(), sw, 6.0, sample.prim_grad.1, sample.prim_grad.0, Vec2::new(0.0, 1.0));
     let dot = Pos2::new(sw.right() - 6.0, sw.bottom() - 6.0);
-    theme::glow_star(ui.painter(), dot, 6.0, sample.sec_grad.1, 11.0, 0.5);
     theme::grad_star(ui.painter(), dot, 7.0, sample.sec_grad.0, sample.sec_grad.1);
 
     ui.painter().text(
@@ -3804,12 +3966,13 @@ fn youtrack_button(ui: &mut egui::Ui, url: &str) -> bool {
     let p = pal();
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.16);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     let pink = Color32::from_rgb(0xFF, 0x31, 0x8C);
     let violet = Color32::from_rgb(0x6B, 0x57, 0xFF);
 
     if hot > 0.02 {
-        theme::glow_rect(ui.painter(), rect, theme::R_CTRL, theme::mix(pink, violet, 0.5), 14.0, hot * 0.45);
+        // a hovered card lifts off the rail on a faint light of its own
+        theme::glow_rect(ui.painter(), rect, theme::R_CTRL, theme::mix(pink, violet, 0.5), 12.0, hot * 0.18);
     }
     let base = if p.dark {
         theme::mix(p.raised, Color32::from_rgb(0x19, 0x19, 0x1C), 0.5)
@@ -3889,4 +4052,40 @@ pub fn youtrack_logo(painter: &egui::Painter, rect: Rect) {
         Vec2::new(s * 0.30, s * 0.055),
     );
     painter.rect_filled(bar, egui::Rounding::ZERO, Color32::WHITE);
+}
+
+/// A category in the Settings window's list: nothing until you reach for it,
+/// and the one open stands in the accent's quiet fill with the bar the
+/// library marks its open script with.
+fn settings_tab_row(ui: &mut egui::Ui, label: &str, icon: Icon, on: bool) -> bool {
+    let p = pal();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 34.0), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
+    if on {
+        ui.painter()
+            .rect_filled(rect, egui::Rounding::same(theme::R_SM), p.primary_quiet);
+        let bar = Rect::from_center_size(Pos2::new(rect.left() + 4.0, rect.center().y), Vec2::new(3.0, 16.0));
+        ui.painter().rect_filled(bar, egui::Rounding::same(1.5), p.primary_light);
+    } else if hot > 0.01 {
+        ui.painter().rect_filled(
+            rect,
+            egui::Rounding::same(theme::R_SM),
+            theme::wash(p.text_faint, (24.0 * hot) as u8),
+        );
+    }
+    let ink = if on { p.text } else { theme::mix(p.text_dim, p.text, hot) };
+    icons::draw(
+        ui.painter(),
+        Rect::from_center_size(Pos2::new(rect.left() + 22.0, rect.center().y), Vec2::splat(14.0)),
+        icon,
+        if on { p.primary_light } else { ink },
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + 38.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        if on { theme::font_med(theme::T_SM) } else { theme::font(theme::T_SM) },
+        ink,
+    );
+    resp.clicked()
 }

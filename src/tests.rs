@@ -530,6 +530,18 @@ fn the_jetbrains_theme_is_one_of_the_set() {
     let p = crate::theme::palette(ThemeId::JetBrains, true);
     // the near-black ground and the warm end of the arches
     assert!(p.backdrop.r() < 0x20 && p.backdrop.g() < 0x20);
-    assert!(p.sec_grad.1.r() > 0xF0 && p.sec_grad.1.g() > 0xA0, "marigold");
+    assert!(p.sec_grad.1.r() >= 0xE8 && p.sec_grad.1.g() > 0xA0, "marigold");
+    // warm, but never pure neon
+    assert!(p.sec_grad.1.b() > 0x30 && p.prim_grad.1.g() > 0x20);
     assert_eq!(ThemeId::ALL.len(), 6);
+}
+
+#[test]
+fn a_tint_is_exactly_as_strong_as_asked() {
+    use eframe::egui::Color32;
+    let c = Color32::from_rgb(200, 100, 50);
+    let t = crate::theme::tint(c, 0.05);
+    assert_eq!(t.a(), 13);
+    assert_eq!((t.r(), t.g(), t.b()), (10, 5, 3), "premultiplied at 5%, not boosted");
+    assert_eq!(crate::theme::tint(c, 0.0), Color32::TRANSPARENT);
 }

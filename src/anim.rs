@@ -186,3 +186,7 @@ pub fn keep_going(ctx: &egui::Context) {
         ctx.request_repaint();
     }
 }
+
+/// How long a hover takes to arrive and to leave. Long enough to read as a
+/// response rather than a blink, short enough never to lag the pointer.
+pub const HOVER: f32 = 0.24;

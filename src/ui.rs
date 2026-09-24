@@ -24,7 +24,7 @@ use crate::theme::{self, pal};
 /// The faint slot that appears under a ribbon control when you reach for it.
 pub fn ghost_slot(ui: &egui::Ui, rect: Rect, hot: bool, on: bool) {
     let p = pal();
-    let t = anim::ease(ui.ctx(), rect.min.x as i32 * 7919 + rect.min.y as i32, hot, 0.14);
+    let t = anim::ease(ui.ctx(), rect.min.x as i32 * 7919 + rect.min.y as i32, hot, anim::HOVER);
     theme::hover_surface(ui.painter(), rect, theme::R_SM, p.primary, t, on);
 }
 
@@ -72,7 +72,7 @@ pub fn icon_button_full(
         }
         None => ui.allocate_exact_size(Vec2::splat(size), Sense::click()),
     };
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     let accent = tint.unwrap_or(p.sec);
     let glyph = rect.shrink(size * 0.28);
 
@@ -109,12 +109,9 @@ pub fn button_sized(
     let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
     let w = width.unwrap_or(galley.rect.width() + icon_w + 24.0);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
 
     if accent {
-        if hot > 0.01 {
-            theme::glow_rect(ui.painter(), rect, theme::R_CTRL, p.sec, 16.0, hot * 0.35);
-        }
         theme::grad_rect(
             ui.painter(),
             rect,
@@ -180,7 +177,7 @@ pub fn chip_button(ui: &mut egui::Ui, text: &str) -> bool {
     );
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(galley.rect.width() + 17.0, 19.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.13);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     ui.painter().rect_filled(
         rect,
         egui::Rounding::same(theme::R_PILL),
@@ -286,7 +283,7 @@ pub fn slider(ui: &mut egui::Ui, value: &mut f32, range: std::ops::RangeInclusiv
         Vec2::new(1.0, 0.0),
     );
 
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || resp.dragged(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || resp.dragged(), anim::HOVER);
     ui.painter()
         .circle_filled(knob, KNOB + hot, theme::lighten(p.sec_light, 0.1 + 0.2 * hot));
     changed
@@ -353,7 +350,7 @@ pub fn ribbon_button(ui: &mut egui::Ui, icon: Icon, label: &str, tip: &str, on: 
     };
     let w = 30.0 + galley.as_ref().map(|g| g.rect.width() + 6.0).unwrap_or(0.0);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     theme::hover_surface(ui.painter(), rect, theme::R_SM, p.primary, hot, on);
     let ink = if on {
         p.primary_light
@@ -519,7 +516,7 @@ pub fn menu_item_enabled(
         if enabled { Sense::click() } else { Sense::hover() },
     );
     rects.push(rect);
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() && enabled, 0.1);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() && enabled, anim::HOVER);
     if hot > 0.01 {
         ui.painter().rect_filled(
             rect,
@@ -555,7 +552,7 @@ pub fn menu_item_enabled(
 pub fn dropdown(ui: &mut egui::Ui, icon: Icon, label: &str, open: bool, width: f32) -> Response {
     let p = pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 30.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || open, 0.13);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || open, anim::HOVER);
     theme::hover_surface(ui.painter(), rect, theme::R_SM, p.primary, hot, open);
     let ink = theme::mix(p.text_dim, p.text, hot);
     icons::draw(
@@ -662,7 +659,7 @@ pub fn swatch(
         }
         None => ui.allocate_exact_size(Vec2::splat(19.0), Sense::click()),
     };
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.13);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     ui.painter()
         .circle_filled(rect.center(), 6.0 + 1.0 * hot, theme::lighten(color, 0.15 * hot));
     if selected {

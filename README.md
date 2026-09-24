@@ -20,6 +20,8 @@ Tesseract is wearing, live.
 
 ![Northstar in the JetBrains theme, with character colours and every panel open](docs/northstar-jetbrains.png)
 
+![Reading mode: one page at a time](docs/northstar-reading.png)
+
 ---
 
 ## Installing
@@ -100,8 +102,8 @@ heading carries a four-pointed star in the gutter that lights while you are in
 its scene. A faint rule marks where each printed page will begin, numbered the
 way the PDF numbers it.
 
-Each element is signalled by a faint band under its words and a thin tick at
-its left edge, in its own colour — scene headings in the theme's warm energy
+Each element is signalled by a whisper of a band under its words and a thin
+tick at its left edge, in its own colour — scene headings in the theme's warm energy
 colour, cues in its accent, dialogue, parentheticals, transitions and shots in
 four more of its hues, and action left neutral. Settings → **Element colours**
 turns it off. None of it ever reaches Reading mode or the page.
@@ -118,9 +120,11 @@ you write straight onto the card. Drag a card by its head to move the whole
 scene; right-click for a card colour or to delete the scene (it asks first,
 and `Ctrl+Z` brings it back).
 
-**Read** — Reading mode: the script exactly as it will print, typeset, title
-page first, drawn from the same layout pass the PDF is written from — no
-bands, tags or stars. Two pages side by side when there is room. Click any
+**Read** — Reading mode: the script exactly as it will print, one page at a
+time, typeset, drawn from the same layout pass the PDF is written from — no
+bands, tags or stars. The page is sized so all of it is in view, and opens on
+the page you were writing. Turn it with `←` `→`, `Page Up` `Page Down`,
+`Home` `End`, the scroll wheel, or the control under the page. Click any
 line to go and write it.
 
 On the right, **Details** (`Ctrl+I`, or the ⓘ in the ribbon) is the script's
@@ -272,6 +276,11 @@ too, so nothing is ever lost.
 
 ## Settings
 
+Settings (`Ctrl+,`, or the sliders in the ribbon) open as a window of their
+own over the app, in seven categories — Appearance, The page, Colour, Panels,
+Writing & saving, YouTrack, About. `Esc`, the close button or a click outside
+puts it away.
+
 Theme (six, each light or dark: Zen, Ember, Frostbite, Bloodmoon and Void —
 the same five as Tesseract — plus **JetBrains**, orange into magenta into
 violet on a near-black ground), **Match Tesseract**, animations, window blur, how solid
@@ -286,6 +295,17 @@ With **Match Tesseract** on, theme, light/dark, glass, blur and motion are read
 from `~/.local/share/tesseract/settings.conf` and followed as Tesseract changes
 them. Choosing a look by hand in Northstar turns matching off. Without
 Tesseract installed, Northstar starts in Bloodmoon, its own red.
+
+---
+
+## Light, used sparingly
+
+Glow is kept for things that are lit for a reason: the scene you are in, the
+place a dragged card will land, a hovered card lifting off the page, and the
+one focal point of the splash. Primary actions are told apart by contrast and
+colour, never by glow. Anything that floats — cards, the find bar, alerts, the
+Settings window — sits on a layered soft shadow instead of a halo, and hovers
+ease in over about a quarter of a second.
 
 ---
 
@@ -312,7 +332,7 @@ and goes.
 ## Development
 
 ```bash
-cargo test          # 60 tests: behaviour, files, formats, and headless UI
+cargo test          # 64 tests: behaviour, files, formats, and headless UI
 cargo build --release
 ./target/release/northstar --emit-icon icon.svg   # the mark, as the app draws it
 ```
