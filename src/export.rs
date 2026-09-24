@@ -4,6 +4,7 @@
 //! composition pass so the page count you see in the status bar is the page
 //! count you get in the PDF.
 
+use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -271,13 +272,175 @@ const LINE_H_MM: f32 = 25.4 / 6.0; // 12pt single spaced = 1/6"
 
 #[allow(dead_code)]
 pub fn to_pdf(doc: &Document, path: &Path) -> Result<(), String> {
-    to_pdf_with(doc, path, false)
+    to_pdf_opts(doc, path, &PdfOptions::default())
 }
 
 /// The PDF, optionally with scene numbers in both margins the way a shooting
 /// script carries them.
+#[allow(dead_code)]
 pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(), String> {
-    use printpdf::{BuiltinFont, Mm, PdfDocument};
+    to_pdf_opts(
+        doc,
+        path,
+        &PdfOptions {
+            scene_numbers,
+            ..PdfOptions::default()
+        },
+    )
+}
+
+/// An ink colour for the page, as 0-255 RGB.
+pub type Ink = [u8; 3];
+
+/// What goes into a PDF, beyond the script itself.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdfOptions {
+    pub title_page: bool,
+    pub scene_numbers: bool,
+    /// Which body pages, by the numbers printed on them (1-based). `None` is
+    /// every page.
+    pub pages: Option<Vec<usize>>,
+    /// Each speaker's ink, by name; their cue and every line they say is
+    /// printed in it. `None` prints everything black.
+    pub voices: Option<HashMap<String, Ink>>,
+}
+
+impl Default for PdfOptions {
+    fn default() -> Self {
+        PdfOptions {
+            title_page: true,
+            scene_numbers: false,
+            pages: None,
+            voices: None,
+        }
+    }
+}
+
+/// One printed body page: the number printed on it, and each of its lines
+/// with the ink it is set in (`None` is black).
+#[derive(Clone, Debug)]
+pub struct PlannedPage {
+    pub number: usize,
+    pub lines: Vec<(Line, Option<Ink>)>,
+}
+
+/// Lay the body out, decide who is speaking on every line — across page
+/// breaks, so a speech that runs over keeps its colour — and keep only the
+/// pages asked for. Page numbers stay the ones the full script has, the way a
+/// production prints revised or selected pages.
+pub fn pdf_plan(doc: &Document, opts: &PdfOptions) -> Vec<PlannedPage> {
+    let pages = paginate(&compose(doc));
+    let mut who: Option<String> = None;
+    let mut out = Vec::new();
+    for (i, page) in pages.iter().enumerate() {
+        let number = i + 1;
+        let mut lines = Vec::with_capacity(page.len());
+        for line in page {
+            match line.element {
+                Some(Element::Character) => {
+                    let n = crate::model::base_character(&line.text);
+                    if !n.is_empty() {
+                        who = Some(n);
+                    }
+                }
+                Some(Element::Dialogue) | Some(Element::Parenthetical) | None => {}
+                _ => who = None,
+            }
+            let ink = match (&opts.voices, &who) {
+                (Some(v), Some(n)) if line.element.is_some() => v.get(n).copied(),
+                _ => None,
+            };
+            lines.push((line.clone(), ink));
+        }
+        let wanted = opts.pages.as_ref().map(|w| w.contains(&number)).unwrap_or(true);
+        if wanted {
+            out.push(PlannedPage { number, lines });
+        }
+    }
+    out
+}
+
+/// Read a page selection the way a print dialog does: `1-3, 7, 10-` — single
+/// pages, ranges, and an open range running to the end. `max` is the number
+/// of body pages. The result is sorted and without repeats.
+pub fn parse_page_range(text: &str, max: usize) -> Result<Vec<usize>, String> {
+    let mut out: Vec<usize> = Vec::new();
+    let t = text.trim();
+    if t.is_empty() {
+        return Err("Name at least one page".into());
+    }
+    for part in t.split([',', ';', ' ']).map(str::trim).filter(|p| !p.is_empty()) {
+        let num = |s: &str| -> Result<usize, String> {
+            s.trim()
+                .parse::<usize>()
+                .map_err(|_| format!("\u{201c}{s}\u{201d} is not a page number"))
+        };
+        let (lo, hi) = match part.split_once(['-', '\u{2013}']) {
+            Some((a, b)) => {
+                let lo = if a.trim().is_empty() { 1 } else { num(a)? };
+                let hi = if b.trim().is_empty() { max } else { num(b)? };
+                (lo, hi)
+            }
+            None => {
+                let n = num(part)?;
+                (n, n)
+            }
+        };
+        if lo == 0 || hi == 0 {
+            return Err("Pages start at 1".into());
+        }
+        if lo > hi {
+            return Err(format!("{lo}-{hi} runs backwards"));
+        }
+        if lo > max {
+            return Err(format!(
+                "There {} only {max} page{}",
+                if max == 1 { "is" } else { "are" },
+                if max == 1 { "" } else { "s" }
+            ));
+        }
+        for n in lo..=hi.min(max) {
+            if !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out.sort_unstable();
+    Ok(out)
+}
+
+/// The body page a block's first line is printed on (1-based).
+pub fn page_of_block(doc: &Document, id: u64) -> Option<usize> {
+    paginate(&compose(doc))
+        .iter()
+        .position(|pg| pg.iter().any(|l| l.block == Some(id)))
+        .map(|k| k + 1)
+}
+
+/// A page list written back compactly: `1-3, 7, 10-12`.
+pub fn describe_pages(pages: &[usize]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < pages.len() {
+        let start = pages[i];
+        let mut end = start;
+        while i + 1 < pages.len() && pages[i + 1] == end + 1 {
+            i += 1;
+            end = pages[i];
+        }
+        parts.push(if start == end { format!("{start}") } else { format!("{start}-{end}") });
+        i += 1;
+    }
+    parts.join(", ")
+}
+
+pub fn to_pdf_opts(doc: &Document, path: &Path, opts: &PdfOptions) -> Result<(), String> {
+    use printpdf::{BuiltinFont, Color, Mm, PdfDocument, Rgb};
+
+    let plan = pdf_plan(doc, opts);
+    if plan.is_empty() && !opts.title_page {
+        return Err("Nothing to export: no pages chosen".into());
+    }
 
     let title = if doc.meta.title.trim().is_empty() {
         "Untitled Script"
@@ -293,10 +456,22 @@ pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(
     let courier_bold = pdf
         .add_builtin_font(BuiltinFont::CourierBold)
         .map_err(|e| e.to_string())?;
+    let colour = |ink: Option<Ink>| {
+        let [r, g, b] = ink.unwrap_or([0, 0, 0]);
+        Color::Rgb(Rgb::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, None))
+    };
+
+    // the first sheet PdfDocument made is used by whichever page comes first
+    let mut first = Some((first_page, first_layer));
+    let mut next_sheet = |name: String| match first.take() {
+        Some(s) => s,
+        None => pdf.add_page(Mm(PAGE_W_MM), Mm(PAGE_H_MM), name),
+    };
 
     // --- title page ---
-    {
-        let layer = pdf.get_page(first_page).get_layer(first_layer);
+    if opts.title_page {
+        let (pg, ly) = next_sheet("Title".into());
+        let layer = pdf.get_page(pg).get_layer(ly);
         let put = |text: &str, line: f32, bold: bool| {
             let cols = text.chars().count() as f32;
             let x = LEFT_MARGIN_MM + (PAGE_COLS as f32 - cols).max(0.0) / 2.0 * CHAR_W_MM;
@@ -324,11 +499,11 @@ pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(
     }
 
     // --- body ---
-    let pages = paginate(&compose(doc));
-    for (i, page) in pages.iter().enumerate() {
-        let (page_idx, layer_idx) =
-            pdf.add_page(Mm(PAGE_W_MM), Mm(PAGE_H_MM), format!("Page {}", i + 1));
+    for page in &plan {
+        let i = page.number - 1;
+        let (page_idx, layer_idx) = next_sheet(format!("Page {}", page.number));
         let layer = pdf.get_page(page_idx).get_layer(layer_idx);
+        layer.set_fill_color(colour(None));
 
         // page number, top right, 0.5" down — omitted on the first body page
         if i > 0 {
@@ -339,17 +514,21 @@ pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(
             layer.use_text(&num, 12.0, Mm(x), Mm(y), &courier);
         }
 
-        for (row, line) in page.iter().enumerate() {
+        let mut inked: Option<Ink> = None;
+        for (row, (line, ink)) in page.lines.iter().enumerate() {
             if line.text.trim().is_empty() {
                 continue;
             }
             let x = LEFT_MARGIN_MM + line.indent as f32 * CHAR_W_MM;
             let y = PAGE_H_MM - TOP_MARGIN_MM - (row as f32 + 1.0) * LINE_H_MM;
             let bold = matches!(line.element, Some(Element::SceneHeading));
-            if scene_numbers {
+            if opts.scene_numbers {
                 if let Some(n) = line.scene {
+                    if inked.is_some() {
+                        layer.set_fill_color(colour(None));
+                        inked = None;
+                    }
                     let num = format!("{n}");
-                    let y = PAGE_H_MM - TOP_MARGIN_MM - (row as f32 + 1.0) * LINE_H_MM;
                     let w = num.chars().count() as f32 * CHAR_W_MM;
                     // left: ending half an inch short of the text column
                     layer.use_text(&num, 12.0, Mm(LEFT_MARGIN_MM - 12.7 - w), Mm(y), &courier_bold);
@@ -357,6 +536,11 @@ pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(
                     let right = LEFT_MARGIN_MM + PAGE_COLS as f32 * CHAR_W_MM + 5.0;
                     layer.use_text(&num, 12.0, Mm(right), Mm(y), &courier_bold);
                 }
+            }
+            // only switch ink when it changes, so a black page stays lean
+            if *ink != inked {
+                layer.set_fill_color(colour(*ink));
+                inked = *ink;
             }
             layer.use_text(
                 &line.text,
@@ -473,16 +657,33 @@ pub fn export(doc: &Document, format: Format) -> Result<PathBuf, String> {
 }
 
 pub fn export_with(doc: &Document, format: Format, scene_numbers: bool) -> Result<PathBuf, String> {
+    export_opts(
+        doc,
+        format,
+        &PdfOptions {
+            scene_numbers,
+            ..PdfOptions::default()
+        },
+    )
+}
+
+/// Export with the PDF's options. A PDF of only some pages says which in its
+/// name, so it never overwrites the whole script's PDF.
+pub fn export_opts(doc: &Document, format: Format, opts: &PdfOptions) -> Result<PathBuf, String> {
     storage::ensure_dirs().map_err(|e| e.to_string())?;
+    let part = match (&opts.pages, format) {
+        (Some(p), Format::Pdf) => format!("-pages-{}", describe_pages(p).replace(", ", "_")),
+        _ => String::new(),
+    };
     let name = format!(
-        "{}.{}",
+        "{}{part}.{}",
         storage::slugify(&doc.meta.title),
         format.ext()
     );
     let path = storage::exports_dir().join(name);
 
     match format {
-        Format::Pdf => to_pdf_with(doc, &path, scene_numbers)?,
+        Format::Pdf => to_pdf_opts(doc, &path, opts)?,
         Format::FinalDraft => std::fs::write(&path, to_fdx(doc)).map_err(|e| e.to_string())?,
         Format::Text => std::fs::write(&path, to_plain_text(doc)).map_err(|e| e.to_string())?,
         Format::Fountain => std::fs::write(&path, to_fountain(doc)).map_err(|e| e.to_string())?,

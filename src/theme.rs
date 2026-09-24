@@ -1472,13 +1472,27 @@ pub fn tint(col: Color32, k: f32) -> Color32 {
 /// turns the whole wheel, for Settings' Shuffle.
 pub fn character_colors(names: &[String], seed: u32) -> std::collections::HashMap<String, Color32> {
     let p = pal();
+    let (s, l) = if p.dark { (0.62, 0.72) } else { (0.66, 0.36) };
+    voices_at(names, seed, s, l)
+}
+
+/// The same colours for paper: each speaker keeps their hue — so they are
+/// recognisably the colour they wear in the app — at a depth that reads as
+/// ink on white, whatever theme the app is in.
+pub fn character_inks(names: &[String], seed: u32) -> std::collections::HashMap<String, [u8; 3]> {
+    voices_at(names, seed, 0.70, 0.34)
+        .into_iter()
+        .map(|(n, c)| (n, [c.r(), c.g(), c.b()]))
+        .collect()
+}
+
+fn voices_at(names: &[String], seed: u32, s: f32, l: f32) -> std::collections::HashMap<String, Color32> {
     let start = (seed as f32 * 0.137_5).fract();
     names
         .iter()
         .enumerate()
         .map(|(k, n)| {
             let h = (start + k as f32 * 0.618_034).fract();
-            let (s, l) = if p.dark { (0.62, 0.72) } else { (0.66, 0.36) };
             (n.clone(), hsl(h, s, l))
         })
         .collect()

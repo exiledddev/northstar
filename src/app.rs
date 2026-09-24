@@ -71,6 +71,8 @@ pub enum Ask {
 enum Popover {
     Menu,
     Settings,
+    /// The Export PDF window: which pages, and what they carry.
+    Export,
     Snapshots,
     Elements,
 }
@@ -103,6 +105,17 @@ struct Rail {
     all_collapsed: bool,
     /// A row's right-click menu: which script, where, and the frame it opened.
     menu: Option<(PathBuf, Pos2, u64)>,
+}
+
+/// Which pages the Export window is set to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum PageChoice {
+    #[default]
+    All,
+    /// The page the caret (or Reading mode) is on.
+    This,
+    /// The pages typed into the field.
+    Chosen,
 }
 
 #[derive(Default)]
@@ -159,6 +172,11 @@ pub struct App {
     popover_frame: u64,
     /// Which category the Settings window is showing.
     settings_tab: usize,
+    export_choice: PageChoice,
+    export_range: String,
+    /// The window that was open last frame, so one that has just opened can
+    /// take the keyboard from whatever had it.
+    window_seen: Option<Popover>,
     menu_button_rect: Rect,
     settings_button_rect: Rect,
     element_button_rect: Rect,
@@ -269,6 +287,9 @@ impl App {
             popover: None,
             popover_frame: 0,
             settings_tab: 0,
+            export_choice: PageChoice::All,
+            export_range: String::new(),
+            window_seen: None,
             menu_button_rect: Rect::NOTHING,
             settings_button_rect: Rect::NOTHING,
             element_button_rect: Rect::NOTHING,
@@ -589,9 +610,68 @@ impl App {
         self.layout_stale = false;
     }
 
+    /// What a PDF carries, from the choices remembered in the Export window.
+    fn pdf_options(&self, pages: Option<Vec<usize>>) -> export::PdfOptions {
+        export::PdfOptions {
+            title_page: self.settings.pdf_title_page,
+            scene_numbers: self.settings.pdf_scene_numbers,
+            pages,
+            voices: if self.settings.pdf_character_colors {
+                Some(theme::character_inks(&self.layout.speakers, self.settings.colour_seed))
+            } else {
+                None
+            },
+        }
+    }
+
+    /// The body page the reader is on: the caret's in Write, the sheet on
+    /// show in Reading mode. `None` on the title page.
+    fn page_here(&self) -> Option<usize> {
+        if self.mode == Mode::Read {
+            return (self.pages.current > 0).then_some(self.pages.current);
+        }
+        self.ed
+            .focus_block
+            .and_then(|id| export::page_of_block(&self.doc, id))
+            .or(Some(1))
+    }
+
+    /// The pages the Export window would export, or why it cannot.
+    fn export_selection(&self) -> Result<Option<Vec<usize>>, String> {
+        match self.export_choice {
+            PageChoice::All => Ok(None),
+            PageChoice::This => Ok(Some(self.page_here().into_iter().collect())),
+            PageChoice::Chosen => export::parse_page_range(&self.export_range, self.layout.pages).map(Some),
+        }
+    }
+
+    fn open_export_window(&mut self) {
+        self.refresh_layout(true);
+        self.popover = Some(Popover::Export);
+        self.popover_frame = self.frame_no;
+    }
+
+    fn export_pdf_with(&mut self, pages: Option<Vec<usize>>) {
+        self.doc.normalize();
+        let opts = self.pdf_options(pages);
+        match export::export_opts(&self.doc, Format::Pdf, &opts) {
+            Ok(p) => {
+                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("file").to_string();
+                match self.settings.after_export {
+                    AfterExport::Open => storage::open_with_desktop(&p),
+                    AfterExport::Reveal => storage::reveal_in_file_manager(&p),
+                    AfterExport::Nothing => {}
+                }
+                self.deck.ok("Exported", &name);
+            }
+            Err(e) => self.deck.say("Export failed", &e, Tone::Danger),
+        }
+    }
+
     fn export(&mut self, format: Format, quick: bool) {
         self.doc.normalize();
-        match export::export_with(&self.doc, format, self.settings.scene_numbers) {
+        let opts = self.pdf_options(None);
+        match export::export_opts(&self.doc, format, &opts) {
             Ok(p) => {
                 let name = p
                     .file_name()
@@ -1132,6 +1212,9 @@ impl App {
         ui.spacing_mut().item_spacing.x = 6.0;
         if ui::ribbon_button(ui, Icon::Print, "Quick Export", "Export this script as a PDF  ·  Ctrl+E", false) {
             self.export(Format::Pdf, true);
+        }
+        if ui::ribbon_button(ui, Icon::Download, "Export…", "Choose pages and colours  ·  Ctrl+Shift+E", self.popover == Some(Popover::Export)) {
+            self.open_export_window();
         }
         let left = (room - ui.min_rect().width()).max(0.0);
         self.stats_line(ui, left.min(200.0), false);
@@ -2491,14 +2574,31 @@ impl App {
     // ---------- popovers ----------
 
     fn popovers(&mut self, ctx: &egui::Context) {
+        // A window that has just opened takes the keyboard: otherwise the
+        // block with the caret behind it keeps it, and Enter would split a
+        // line of the script instead of answering the window.
+        let window = self.popover.filter(|p| matches!(p, Popover::Settings | Popover::Export));
+        if window.is_some() && window != self.window_seen {
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
+        self.window_seen = window;
         if self.popover != Some(Popover::Settings) {
             // seeded shut, so the window rises again every time it opens
             ctx.animate_bool_with_time(egui::Id::new("ns-settings-veil"), false, 0.0);
             ctx.animate_bool_with_time(egui::Id::new("ns-settings-rise"), false, 0.0);
         }
+        if self.popover != Some(Popover::Export) {
+            ctx.animate_bool_with_time(egui::Id::new("ns-export-veil"), false, 0.0);
+            ctx.animate_bool_with_time(egui::Id::new("ns-export-rise"), false, 0.0);
+        }
         match self.popover {
             Some(Popover::Menu) => self.more_menu(ctx),
             Some(Popover::Settings) => self.settings_panel(ctx),
+            Some(Popover::Export) => self.export_window(ctx),
             Some(Popover::Snapshots) => self.snapshots_panel(ctx),
             Some(Popover::Elements) => self.elements_menu(ctx),
             None => {}
@@ -2528,9 +2628,8 @@ impl App {
                     ));
                     let mut rects = Vec::new();
                     ui::section(ui, "Export");
-                    if ui::menu_item(ui, &mut rects, "Export PDF", Icon::Print, false) {
-                        self.export(Format::Pdf, false);
-                        self.popover = None;
+                    if ui::menu_item(ui, &mut rects, "Export PDF…", Icon::Print, false) {
+                        self.open_export_window();
                     }
                     if ui::menu_item(ui, &mut rects, "Export Final Draft (.fdx)", Icon::Download, false) {
                         self.export(Format::FinalDraft, false);
@@ -2719,6 +2818,254 @@ impl App {
             })
             .response;
         self.close_popover_if_outside(ctx, &[area.rect, self.element_button_rect]);
+    }
+
+    /// Export PDF, as a window of its own: which pages, and what they carry.
+    fn export_window(&mut self, ctx: &egui::Context) {
+        let p = pal();
+        let screen = ctx.screen_rect();
+        let before = self.settings.clone();
+        let mut close = false;
+        let mut go = false;
+
+        let veil = anim::ease(ctx, "ns-export-veil", true, 0.24);
+        egui::Area::new(egui::Id::new("ns-export-scrim"))
+            .order(egui::Order::Middle)
+            .fixed_pos(screen.min)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(screen.size(), Sense::click());
+                ui.painter().rect_filled(
+                    rect,
+                    egui::Rounding::same(if chrome::maximized(ctx) { 0.0 } else { theme::R_WINDOW }),
+                    Color32::from_black_alpha((120.0 * veil) as u8),
+                );
+                if resp.clicked() && self.frame_no > self.popover_frame + 1 {
+                    close = true;
+                }
+            });
+
+        let total = self.layout.pages;
+        let selection = self.export_selection();
+        let here = self.page_here();
+        let t = anim::ease(ctx, "ns-export-rise", true, 0.30);
+        let size = Vec2::new(452.0, 476.0);
+        let rect = Rect::from_center_size(screen.center(), size * (0.97 + 0.03 * t));
+
+        egui::Area::new(egui::Id::new("ns-export"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rect.min)
+            .show(ctx, |ui| {
+                ui.set_opacity(0.2 + 0.8 * t);
+                let (win, _) = ui.allocate_exact_size(rect.size(), Sense::click());
+                theme::lift_shadow(ui.painter(), win, theme::R_ISLAND, 1.0);
+                ui.painter().rect_filled(win, egui::Rounding::same(theme::R_ISLAND), p.solid);
+                ui.painter().rect_stroke(
+                    win.shrink(0.5),
+                    egui::Rounding::same(theme::R_ISLAND),
+                    Stroke::new(1.0_f32, theme::wash(Color32::WHITE, if p.dark { 18 } else { 120 })),
+                );
+                let mut ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(win.shrink2(Vec2::new(22.0, 18.0)))
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                let ui = &mut ui;
+
+                // ---- head ----
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    icons::show(ui, Icon::Print, 16.0, p.primary_light);
+                    ui.label(
+                        egui::RichText::new("Export PDF")
+                            .font(theme::font_semi(theme::T_H))
+                            .color(p.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui::icon_button(ui, Icon::Close, "Cancel · Esc", 26.0) {
+                            close = true;
+                        }
+                    });
+                });
+                ui.label(
+                    egui::RichText::new(ui::elide(&self.title_or_untitled(), 56))
+                        .font(theme::font(theme::T_CAP))
+                        .color(p.text_faint),
+                );
+                ui.add_space(8.0);
+
+                // ---- pages ----
+                ui::section(ui, "Pages");
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    let this_label = match here {
+                        Some(n) => format!("This page · {n}"),
+                        None => "This page · title".to_string(),
+                    };
+                    for (choice, label) in [
+                        (PageChoice::All, format!("All {total}")),
+                        (PageChoice::This, this_label),
+                        (PageChoice::Chosen, "Choose…".to_string()),
+                    ] {
+                        let on = self.export_choice == choice;
+                        if ui::button(ui, &label, None, on) && !on {
+                            self.export_choice = choice;
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+                if self.export_choice == PageChoice::Chosen {
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.export_range)
+                            .id(egui::Id::new("ns-export-range"))
+                            .desired_width(f32::INFINITY)
+                            .font(theme::font_mono(theme::T_SM))
+                            .margin(egui::Margin::symmetric(10.0, 7.0))
+                            .hint_text(format!("1-3, 7, 10-  (of {total})")),
+                    );
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        go = true;
+                    }
+                }
+                // what it comes to, or what is wrong with it
+                let (what, bad) = match &selection {
+                    Ok(None) => (
+                        format!("Every page, 1 to {total}{}", if self.settings.pdf_title_page { ", after the title page" } else { "" }),
+                        false,
+                    ),
+                    Ok(Some(v)) if v.is_empty() => (
+                        if self.settings.pdf_title_page { "Just the title page".to_string() } else { "No page to export".to_string() },
+                        !self.settings.pdf_title_page,
+                    ),
+                    Ok(Some(v)) => (
+                        format!(
+                            "{} page{}: {}  ·  printed with their own numbers",
+                            v.len(),
+                            if v.len() == 1 { "" } else { "s" },
+                            export::describe_pages(v)
+                        ),
+                        false,
+                    ),
+                    Err(e) => (e.clone(), true),
+                };
+                ui.label(
+                    egui::RichText::new(what)
+                        .font(theme::font(theme::T_CAP))
+                        .color(if bad { p.danger_light } else { p.text_faint }),
+                );
+
+                ui.add_space(4.0);
+                ui::separator(ui);
+                ui::section(ui, "On the page");
+                let mut v = self.settings.pdf_title_page;
+                if ui::toggle_row(ui, "Title page", "Title, author, draft and contact, on a page of their own.", &mut v) {
+                    self.settings.pdf_title_page = v;
+                }
+                let mut v = self.settings.pdf_scene_numbers;
+                if ui::toggle_row(ui, "Scene numbers", "In both margins, the way a shooting script carries them.", &mut v) {
+                    self.settings.pdf_scene_numbers = v;
+                }
+                let mut v = self.settings.pdf_character_colors;
+                if ui::toggle_row(
+                    ui,
+                    "Character colours",
+                    "Each speaker's cue and lines in their colour — the app's hues, deepened to read as ink on paper.",
+                    &mut v,
+                ) {
+                    self.settings.pdf_character_colors = v;
+                }
+                if self.settings.pdf_character_colors {
+                    // the inks, as they will print, on a scrap of paper
+                    let inks = theme::character_inks(&self.layout.speakers, self.settings.colour_seed);
+                    let names: Vec<String> = self.layout.speakers.iter().take(6).cloned().collect();
+                    let (strip, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
+                    ui.painter().rect_filled(strip, egui::Rounding::same(theme::R_SM), Color32::WHITE);
+                    let mut x = strip.left() + 10.0;
+                    for n in &names {
+                        if let Some([r, g, b]) = inks.get(n) {
+                            let g2 = ui.painter().layout_no_wrap(
+                                n.clone(),
+                                theme::font_page_bold(11.0),
+                                Color32::from_rgb(*r, *g, *b),
+                            );
+                            let w = g2.rect.width();
+                            if x + w > strip.right() - 8.0 {
+                                break;
+                            }
+                            ui.painter().galley(
+                                Pos2::new(x, strip.center().y - g2.rect.height() * 0.5),
+                                g2,
+                                Color32::from_rgb(*r, *g, *b),
+                            );
+                            x += w + 14.0;
+                        }
+                    }
+                    if names.is_empty() {
+                        ui.painter().text(
+                            strip.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "nobody speaks yet",
+                            theme::font(theme::T_CAP),
+                            Color32::from_gray(120),
+                        );
+                    }
+                }
+
+                // ---- foot ----
+                let foot = Rect::from_min_max(
+                    Pos2::new(win.left() + 22.0, win.bottom() - 18.0 - 30.0),
+                    Pos2::new(win.right() - 22.0, win.bottom() - 18.0),
+                );
+                let mut f = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(foot)
+                        .layout(Layout::right_to_left(Align::Center)),
+                );
+                f.spacing_mut().item_spacing.x = 8.0;
+                let can = !bad;
+                if ui::button_sized(&mut f, "Export", Some(Icon::Print), can, Some(104.0)) && can {
+                    go = true;
+                }
+                if ui::button(&mut f, "Cancel", None, false) {
+                    close = true;
+                }
+                f.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(match self.settings.after_export {
+                            AfterExport::Open => "then opens it",
+                            AfterExport::Reveal => "then shows the file",
+                            AfterExport::Nothing => "to the exports folder",
+                        })
+                        .font(theme::font(theme::T_CAP))
+                        .color(p.text_faint),
+                    );
+                });
+            });
+
+        // Enter exports, when there is nothing typed to take it
+        let typing = ctx.memory(|m| m.focused().is_some());
+        if !typing && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter)) {
+            go = true;
+        }
+        if self.settings != before {
+            self.save_settings();
+        }
+        if go {
+            match self.export_selection() {
+                Ok(pages) => {
+                    let nothing = matches!(&pages, Some(v) if v.is_empty()) && !self.settings.pdf_title_page;
+                    if nothing {
+                        self.deck.warn("Nothing to export", "Choose a page, or keep the title page.");
+                    } else {
+                        self.popover = None;
+                        self.export_pdf_with(pages);
+                    }
+                }
+                Err(e) => self.deck.warn("Those pages will not do", &e),
+            }
+        } else if close {
+            self.popover = None;
+        }
     }
 
     /// Settings, as a window of its own over the app — the categories down
@@ -3261,7 +3608,9 @@ impl App {
             self.settings.show_details = !self.settings.show_details;
             self.save_settings();
         }
-        if hit(Modifiers::COMMAND, Key::E) {
+        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::E) {
+            self.open_export_window();
+        } else if hit(Modifiers::COMMAND, Key::E) {
             self.export(Format::Pdf, true);
         }
         if hit(Modifiers::COMMAND, Key::Comma) {
@@ -3496,6 +3845,13 @@ impl App {
     }
     pub fn debug_popover_open(&self) -> bool {
         self.popover.is_some()
+    }
+    pub fn debug_export_open(&self) -> bool {
+        self.popover == Some(Popover::Export)
+    }
+    pub fn debug_export_choose(&mut self, choice: PageChoice, range: &str) {
+        self.export_choice = choice;
+        self.export_range = range.to_string();
     }
     pub fn debug_settings_tab(&self) -> usize {
         self.settings_tab

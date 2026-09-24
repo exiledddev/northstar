@@ -817,3 +817,47 @@ fn settings_is_a_window_that_closes_by_esc_button_or_outside() {
     assert!(h.app.debug_settings_open(), "a click inside keeps it open");
     assert_eq!(h.app.debug_settings_tab(), 1);
 }
+
+#[test]
+fn the_export_window_exports_the_pages_asked_for() {
+    use crate::app::PageChoice;
+    let mut h = Harness::with(1320.0, 900.0, "after_export = nothing\n");
+    let mut d = three_scenes();
+    for _ in 0..140 {
+        d.push(Element::Action, "Line after line after line of action on the page.");
+    }
+    d.reseed_ids();
+    h.load(d);
+    let id = h.app.doc().blocks[1].id;
+    h.focus(id);
+    h.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(h.app.debug_export_open());
+    assert_eq!(h.app.focus_block(), Some(id));
+    // Enter answers the window, not the script behind it
+    let blocks = h.app.doc().blocks.len();
+    h.app.debug_export_choose(PageChoice::Chosen, "2-3");
+    h.frames(2);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(h.app.doc().blocks.len(), blocks, "no line was split behind the window");
+    assert!(!h.app.debug_export_open(), "exporting closes it");
+    let out = storage::exports_dir().join("three-scenes-pages-2-3.pdf");
+    assert!(out.exists(), "{out:?}");
+
+    // a selection that will not do keeps the window open and exports nothing
+    h.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    h.app.debug_export_choose(PageChoice::Chosen, "40-2");
+    h.frames(2);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert!(h.app.debug_export_open());
+    h.press(Key::Escape, Modifiers::NONE);
+    assert!(!h.app.debug_export_open());
+
+    // this page: the one the caret is on
+    h.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    h.app.debug_export_choose(PageChoice::This, "");
+    h.frames(2);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert!(storage::exports_dir().join("three-scenes-pages-1.pdf").exists());
+    // and the choices on the page are remembered
+    assert!(storage::read_settings().pdf_title_page);
+}
