@@ -446,6 +446,20 @@ impl Document {
         found
     }
 
+    /// Everyone who speaks, in the order they first do.
+    pub fn speakers(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for b in &self.blocks {
+            if b.element == Character {
+                let n = base_character(&b.text);
+                if !n.is_empty() && !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out
+    }
+
     /// Everyone who speaks, most lines first.
     pub fn cast(&self) -> Vec<CastMember> {
         let mut out: Vec<CastMember> = Vec::new();

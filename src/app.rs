@@ -37,7 +37,8 @@ const SNAPSHOT_IDLE: Duration = Duration::from_millis(700);
 pub enum Mode {
     Write,
     Cards,
-    Pages,
+    /// Reading mode: the script as it will print, and nothing else.
+    Read,
 }
 
 impl Mode {
@@ -45,13 +46,13 @@ impl Mode {
         match self {
             Mode::Write => 0,
             Mode::Cards => 1,
-            Mode::Pages => 2,
+            Mode::Read => 2,
         }
     }
     fn from_index(i: usize) -> Mode {
         match i {
             1 => Mode::Cards,
-            2 => Mode::Pages,
+            2 => Mode::Read,
             _ => Mode::Write,
         }
     }
@@ -70,7 +71,6 @@ pub enum Ask {
 enum Popover {
     Menu,
     Settings,
-    TitlePage,
     Snapshots,
     Elements,
 }
@@ -87,6 +87,9 @@ struct Layout2 {
     words: usize,
     scenes: usize,
     cast: Vec<CastMember>,
+    /// Everyone who speaks, in order of first appearance — the order their
+    /// colours are dealt out in.
+    speakers: Vec<String>,
     dialogue: f32,
 }
 
@@ -156,10 +159,11 @@ pub struct App {
     popover_frame: u64,
     menu_button_rect: Rect,
     settings_button_rect: Rect,
-    title_chip_rect: Rect,
     element_button_rect: Rect,
     menu_item_rects: Vec<Rect>,
     page_rect: Rect,
+    foot_rect: Rect,
+    aside_rect: Rect,
 
     rail: Rail,
     find: Find,
@@ -262,10 +266,11 @@ impl App {
             popover_frame: 0,
             menu_button_rect: Rect::NOTHING,
             settings_button_rect: Rect::NOTHING,
-            title_chip_rect: Rect::NOTHING,
             element_button_rect: Rect::NOTHING,
             menu_item_rects: Vec::new(),
             page_rect: Rect::NOTHING,
+            foot_rect: Rect::NOTHING,
+            aside_rect: Rect::NOTHING,
             rail: Rail::default(),
             find: Find::default(),
             frame_no: 0,
@@ -561,6 +566,7 @@ impl App {
             words: self.doc.word_count(),
             scenes: self.doc.scene_count(),
             cast: self.doc.cast(),
+            speakers: self.doc.speakers(),
             dialogue: self.doc.dialogue_share(),
         };
         // the session counts what was written, in whichever script
@@ -843,6 +849,15 @@ impl App {
         }
     }
 
+    /// Each speaker's colour, if characters are wearing colours at all.
+    fn voices(&self) -> Option<HashMap<String, Color32>> {
+        if self.settings.character_colors {
+            Some(theme::character_colors(&self.layout.speakers, self.settings.colour_seed))
+        } else {
+            None
+        }
+    }
+
     fn title_or_untitled(&self) -> String {
         if self.doc.meta.title.trim().is_empty() {
             "Untitled Script".to_string()
@@ -882,7 +897,7 @@ impl App {
                 &[
                     ("Write", Icon::Pencil),
                     ("Cards", Icon::Grid),
-                    ("Pages", Icon::File),
+                    ("Read", Icon::Book),
                 ],
                 self.mode.index(),
             ) {
@@ -894,7 +909,7 @@ impl App {
             ui.add_space(6.0);
 
             // what is on the right is laid out first, so the tools know their room
-            let right_w = 214.0 + if self.saved_label().is_some() { 96.0 } else { 0.0 };
+            let right_w = 247.0 + if self.saved_label().is_some() { 96.0 } else { 0.0 };
             let room = (ui.available_width() - right_w).max(0.0);
             let tools = Rect::from_min_size(ui.cursor().min, Vec2::new(room, 30.0));
             let mut child = ui.new_child(
@@ -906,7 +921,7 @@ impl App {
             match self.mode {
                 Mode::Write => self.write_tools(&mut child, room),
                 Mode::Cards => self.cards_tools(&mut child, room),
-                Mode::Pages => self.pages_tools(&mut child, room),
+                Mode::Read => self.read_tools(&mut child, room),
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -950,11 +965,15 @@ impl App {
                 if ui::ribbon_button(ui, Icon::Eye, "", "Focus — just the scene you are in · Ctrl+.", self.focus_mode) {
                     self.focus_mode = !self.focus_mode;
                 }
+                if ui::ribbon_button(ui, Icon::Info, "", "Details — title page and figures · Ctrl+I", self.settings.show_details) {
+                    self.settings.show_details = !self.settings.show_details;
+                    self.save_settings();
+                }
                 if ui::ribbon_button(ui, Icon::Users, "", "Cast", self.settings.show_cast) {
                     self.settings.show_cast = !self.settings.show_cast;
                     self.save_settings();
                 }
-                if ui::ribbon_button(ui, Icon::List, "", "Scenes · Ctrl+I", self.settings.show_scenes) {
+                if ui::ribbon_button(ui, Icon::List, "", "Scenes · Ctrl+Shift+I", self.settings.show_scenes) {
                     self.settings.show_scenes = !self.settings.show_scenes;
                     self.save_settings();
                 }
@@ -1106,7 +1125,7 @@ impl App {
         }
     }
 
-    fn pages_tools(&mut self, ui: &mut egui::Ui, room: f32) {
+    fn read_tools(&mut self, ui: &mut egui::Ui, room: f32) {
         ui.spacing_mut().item_spacing.x = 6.0;
         if ui::ribbon_button(ui, Icon::Print, "Quick Export", "Export this script as a PDF  ·  Ctrl+E", false) {
             self.export(Format::Pdf, true);
@@ -1177,24 +1196,48 @@ impl App {
                         let mut star: Option<PathBuf> = None;
                         let mut menu: Option<(PathBuf, Pos2)> = None;
 
-                        // room kept at the foot of the rail, so the maker's
-                        // name is on screen wherever you are in the app
-                        const FOOT: f32 = 26.0;
-                        let list_h = (ui.available_height() - FOOT).max(60.0);
+                        // Room kept at the foot of the rail, so the way to the
+                        // tracker and the maker's name are on screen wherever
+                        // you are in the list. The gaps egui puts between the
+                        // list, the button and the name are counted too —
+                        // leave them out and the island runs past the others.
+                        const TRACKER: f32 = 34.0;
+                        const FOOT: f32 = 24.0;
+                        let gaps = ui.spacing().item_spacing.y * 2.0;
+                        let list_h = (ui.available_height() - TRACKER - FOOT - gaps).max(60.0);
+                        let (list, _) = ui.allocate_exact_size(
+                            Vec2::new(ui.available_width(), list_h),
+                            Sense::hover(),
+                        );
+                        let mut list_ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(list)
+                                .layout(Layout::top_down(Align::Min)),
+                        );
                         egui::ScrollArea::vertical()
                             .id_salt("ns-rail-list")
                             .auto_shrink([false; 2])
                             .max_height(list_h)
-                            .show(ui, |ui| {
+                            .show(&mut list_ui, |ui| {
                                 self.rail_body(ui, &mut open, &mut ask, &mut star, &mut menu);
                             });
 
+                        if youtrack_button(ui, &self.settings.youtrack_url) {
+                            let url = self.settings.youtrack_url.trim().to_string();
+                            if url.starts_with("http://") || url.starts_with("https://") {
+                                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                            } else {
+                                self.deck.warn("That is not a web address", "Set the YouTrack link in Settings.");
+                            }
+                        }
+
                         let (foot, _) =
                             ui.allocate_exact_size(Vec2::new(ui.available_width(), FOOT), Sense::hover());
+                        self.foot_rect = foot;
                         theme::tracked_text(
                             ui.painter(),
-                            Pos2::new(foot.left() + 3.0, foot.center().y + 3.0),
-                            "STARFORGE SOFTWARE",
+                            Pos2::new(foot.left() + 3.0, foot.center().y + 2.0),
+                            "MARKEDEXILED SOFTWARE",
                             theme::font_semi(theme::T_MICRO - 0.5),
                             theme::wash(p.text_faint, 150),
                             1.4,
@@ -1513,7 +1556,10 @@ impl App {
     // ---------- the right island ----------
 
     fn aside(&mut self, ctx: &egui::Context) {
-        if !(self.settings.show_scenes || self.settings.show_cast) || self.focus_mode {
+        let details = self.settings.show_details;
+        let nav = self.settings.show_scenes || self.settings.show_cast;
+        if !(details || nav) || self.focus_mode {
+            self.aside_rect = Rect::NOTHING;
             return;
         }
         egui::SidePanel::right("ns-aside")
@@ -1527,34 +1573,164 @@ impl App {
                 bottom: theme::GAP,
             }))
             .show(ctx, |ui| {
-                theme::island_frame(theme::R_ISLAND)
-                    .inner_margin(egui::Margin::symmetric(12.0, 14.0))
-                    .show(ui, |ui| {
-                        ui.set_min_size(ui.available_size());
-                        let both = self.settings.show_scenes && self.settings.show_cast;
-                        if self.settings.show_scenes {
-                            let h = if both {
-                                (ui.available_height() * 0.58).max(120.0)
-                            } else {
-                                ui.available_height()
-                            };
-                            let (rect, _) =
-                                ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
-                            let mut child = ui.new_child(
-                                egui::UiBuilder::new()
-                                    .max_rect(rect)
-                                    .layout(Layout::top_down(Align::Min)),
-                            );
-                            self.scene_outliner(&mut child);
-                        }
-                        if both {
-                            ui::separator(ui);
-                        }
-                        if self.settings.show_cast {
-                            self.cast_panel(ui);
-                        }
-                    });
+                self.aside_rect = ui.max_rect();
+                // Two islands down the right, with the same gap of backdrop
+                // between them as everywhere else: the script's details on
+                // top, the navigator under it. Whichever is alone fills the
+                // column.
+                ui.spacing_mut().item_spacing.y = theme::GAP;
+                if details {
+                    let island = theme::island_frame(theme::R_ISLAND)
+                        .inner_margin(egui::Margin::symmetric(12.0, 14.0));
+                    if nav {
+                        // never more than a little under half the column, so
+                        // the navigator under it always has room to work
+                        let cap = (ui.available_height() * 0.46 - 28.0).max(120.0);
+                        island.show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            egui::ScrollArea::vertical()
+                                .id_salt("ns-details")
+                                .max_height(cap)
+                                .auto_shrink([false, true])
+                                .show(ui, |ui| {
+                                    ui.set_max_width(ui.available_width() - 6.0);
+                                    self.details_panel(ui);
+                                });
+                        });
+                    } else {
+                        island.show(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            self.details_panel(ui);
+                        });
+                    }
+                }
+                if nav {
+                    theme::island_frame(theme::R_ISLAND)
+                        .inner_margin(egui::Margin::symmetric(12.0, 14.0))
+                        .show(ui, |ui| {
+                            ui.set_min_size(ui.available_size());
+                            let both = self.settings.show_scenes && self.settings.show_cast;
+                            if self.settings.show_scenes {
+                                let h = if both {
+                                    (ui.available_height() * 0.58).max(90.0).min(ui.available_height() - 60.0)
+                                } else {
+                                    ui.available_height()
+                                };
+                                let (rect, _) = ui.allocate_exact_size(
+                                    Vec2::new(ui.available_width(), h),
+                                    Sense::hover(),
+                                );
+                                let mut child = ui.new_child(
+                                    egui::UiBuilder::new()
+                                        .max_rect(rect)
+                                        .layout(Layout::top_down(Align::Min)),
+                                );
+                                self.scene_outliner(&mut child);
+                            }
+                            if both {
+                                ui::separator(ui);
+                            }
+                            if self.settings.show_cast {
+                                self.cast_panel(ui);
+                            }
+                        });
+                }
             });
+    }
+
+    /// The script's details: its title page, and what it adds up to.
+    fn details_panel(&mut self, ui: &mut egui::Ui) {
+        let p = pal();
+        let mut edited = false;
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            icons::show(ui, Icon::Info, 12.0, p.text_faint);
+            ui.label(
+                egui::RichText::new("DETAILS")
+                    .font(theme::font_semi(theme::T_MICRO))
+                    .color(p.text_faint),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::icon_button(ui, Icon::Close, "Hide · Ctrl+I", 20.0) {
+                    self.settings.show_details = false;
+                    self.save_settings();
+                }
+            });
+        });
+        ui.add_space(4.0);
+        ui::section(ui, "Title page");
+        ui.spacing_mut().item_spacing.y = 4.0;
+        for (label, value, hint) in [
+            ("Title", &mut self.doc.meta.title, "The Long Way Down"),
+            ("Written by", &mut self.doc.meta.author, "A. Writer"),
+            ("Draft", &mut self.doc.meta.draft, "First Draft"),
+            ("Contact", &mut self.doc.meta.contact, "agent@example.com"),
+        ] {
+            ui.label(
+                egui::RichText::new(label)
+                    .font(theme::font_med(theme::T_CAP))
+                    .color(p.text_faint),
+            );
+            if ui
+                .add(
+                    egui::TextEdit::singleline(value)
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::Margin::symmetric(10.0, 6.0))
+                        .hint_text(hint),
+                )
+                .changed()
+            {
+                edited = true;
+            }
+            ui.add_space(4.0);
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
+            for (label, value) in [
+                ("today", today()),
+                ("first draft", "First Draft".to_string()),
+                ("revised", format!("Revised {}", today())),
+            ] {
+                if ui::chip_button(ui, label) {
+                    self.doc.meta.draft = value;
+                    edited = true;
+                }
+            }
+        });
+        if edited {
+            self.mark_changed();
+        }
+
+        ui.add_space(6.0);
+        ui::separator(ui);
+        ui::section(ui, "The script");
+        let l = &self.layout;
+        let rows = [
+            ("Pages", format!("{}", l.pages)),
+            ("Running time", format!("about {} min", l.pages)),
+            ("Scenes", format!("{}", l.scenes)),
+            ("Speaking parts", format!("{}", l.speakers.len())),
+            ("Words", format!("{}", l.words)),
+            ("Dialogue", format!("{:.0}%", l.dialogue * 100.0)),
+        ];
+        for (k, v) in rows {
+            ui.horizontal(|ui| {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(k)
+                        .font(theme::font(theme::T_SM))
+                        .color(p.text_dim),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(v)
+                            .font(theme::font_mono(theme::T_CAP))
+                            .color(p.text),
+                    );
+                });
+            });
+        }
     }
 
     /// Every scene, in order, on a mini rail of its own — the navigator.
@@ -1601,17 +1777,35 @@ impl App {
                 let text_left = left + 18.0;
                 let mut dots: Vec<f32> = Vec::new();
 
+                ui.spacing_mut().item_spacing.y = 2.0;
                 for (i, sc) in scenes.iter().enumerate() {
                     let w = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 38.0), Sense::click());
                     let is_live = live == Some(i);
                     let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
 
-                    if is_live || hot > 0.02 {
+                    // The live scene gets the editor's own light — a wash that
+                    // fades away to the right, and a short bar in the accent —
+                    // so the words on it stay readable. Hover is only a breath.
+                    let slot = rect.shrink2(Vec2::new(0.0, 2.0));
+                    if is_live {
+                        theme::fill_grad_poly(
+                            ui.painter(),
+                            &theme::rounded_poly(slot, theme::R_SM),
+                            theme::wash(p.primary, if p.dark { 44 } else { 36 }),
+                            theme::wash(p.primary, 0),
+                            Vec2::new(1.0, 0.0),
+                        );
+                        let bar = Rect::from_center_size(
+                            Pos2::new(slot.left() + 3.5, slot.center().y),
+                            Vec2::new(3.0, slot.height() - 16.0),
+                        );
+                        ui.painter().rect_filled(bar, egui::Rounding::same(1.5), p.primary_light);
+                    } else if hot > 0.02 {
                         ui.painter().rect_filled(
-                            rect.expand2(Vec2::new(0.0, -2.0)),
+                            slot,
                             egui::Rounding::same(theme::R_SM),
-                            theme::wash(p.primary, if is_live { 34 } else { (26.0 * hot) as u8 }),
+                            theme::wash(p.text_faint, (22.0 * hot) as u8),
                         );
                     }
 
@@ -1645,7 +1839,7 @@ impl App {
                     ui.painter().text(
                         Pos2::new(text_left, cy - 6.5),
                         egui::Align2::LEFT_CENTER,
-                        ui::elide(&label, ((rect.right() - text_left - 14.0) / 7.0) as usize),
+                        ui::elide(&label, ((rect.right() - text_left - 16.0) / 7.2) as usize),
                         if is_live {
                             theme::font_med(theme::T_SM)
                         } else {
@@ -1734,12 +1928,18 @@ impl App {
 
         let mut jump: Option<(String, u64)> = None;
         let cast = self.layout.cast.clone();
-        let list_h = (ui.available_height() - 46.0).max(40.0);
+        let voices = self.voices();
+        // the balance line and its bar only when there is room for them and
+        // at least a row of the list; the list gives way before anything
+        // runs past the island
+        let show_balance = ui.available_height() > 110.0;
+        let list_h = (ui.available_height() - if show_balance { 46.0 } else { 0.0 }).max(0.0);
         egui::ScrollArea::vertical()
             .id_salt("ns-cast")
             .auto_shrink([false; 2])
             .max_height(list_h)
             .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
                 for (k, c) in cast.iter().enumerate() {
                     let w = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
@@ -1754,7 +1954,10 @@ impl App {
                     ui.painter().circle_filled(
                         Pos2::new(rect.left() + 12.0, rect.center().y),
                         3.0,
-                        p.group(k),
+                        voices
+                            .as_ref()
+                            .and_then(|v| v.get(&c.name).copied())
+                            .unwrap_or_else(|| p.group(k)),
                     );
                     ui.painter().text(
                         Pos2::new(rect.left() + 24.0, rect.center().y),
@@ -1792,6 +1995,9 @@ impl App {
             self.ed.jump_to(id);
         }
 
+        if !show_balance {
+            return;
+        }
         // the balance of the script: how much of it is talk
         ui.add_space(8.0);
         let d = self.layout.dialogue;
@@ -1846,7 +2052,7 @@ impl App {
                         match mode {
                             Mode::Write => self.write_page(ui),
                             Mode::Cards => self.cards_page(ui),
-                            Mode::Pages => self.pages_page(ui),
+                            Mode::Read => self.read_page(ui),
                         }
                     });
             });
@@ -1855,6 +2061,7 @@ impl App {
     fn write_page(&mut self, ui: &mut egui::Ui) {
         let mut changed = false;
         let starts = std::mem::take(&mut self.layout.page_starts);
+        let voices = self.voices();
         egui::ScrollArea::vertical()
             .id_salt("ns-write")
             .auto_shrink([false; 2])
@@ -1881,6 +2088,8 @@ impl App {
                     focus_mode: self.focus_mode,
                     find: needle.as_deref(),
                     current,
+                    element_colors: self.settings.element_colors,
+                    char_colors: voices.as_ref(),
                 };
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
@@ -1946,42 +2155,71 @@ impl App {
             }
         }
 
-        let mut open_title_page = false;
-        let chip_rect = head
-            .horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
-                ui.add_space(editor::GUTTER);
-                let file = self
-                    .path
-                    .as_ref()
-                    .and_then(|x| x.file_name())
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("not saved yet")
-                    .to_string();
+        // One row, never wrapped: a band is only so tall, and a wrapped
+        // second line of chips would fall off the bottom of it. The chips
+        // are measured first; the file name gets whatever room is left.
+        let chip_font = theme::font(theme::T_MICRO + 0.5);
+        let pg = self.layout.pages;
+        let mut chips: Vec<(String, Option<Color32>)> = Vec::new();
+        if !self.doc.meta.author.trim().is_empty() {
+            chips.push((format!("by {}", self.doc.meta.author.trim()), Some(p.primary)));
+        }
+        if !self.doc.meta.draft.trim().is_empty() {
+            chips.push((self.doc.meta.draft.trim().to_string(), Some(p.sec)));
+        }
+        chips.push((
+            format!("{pg} page{}  ·  {pg} min", if pg == 1 { "" } else { "s" }),
+            None,
+        ));
+        let details_label = if self.settings.show_details { "details" } else { "+ title page" };
+        let gap = 6.0;
+        let mut chips_w = 0.0;
+        for (t, _) in &chips {
+            chips_w += head.painter().layout_no_wrap(t.clone(), chip_font.clone(), p.text).rect.width() + 15.0 + gap;
+        }
+        chips_w += head.painter().layout_no_wrap(details_label.to_string(), chip_font.clone(), p.text).rect.width() + 17.0;
+        let file = self
+            .path
+            .as_ref()
+            .and_then(|x| x.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or("not saved yet")
+            .to_string();
+        let room = head.available_width() - editor::GUTTER - chips_w - 16.0;
+        let char_w = head
+            .painter()
+            .layout_no_wrap("m".to_string(), theme::font_mono(theme::T_CAP), p.text)
+            .rect
+            .width()
+            .max(1.0);
+        let file = if room < char_w * 6.0 {
+            String::new()
+        } else {
+            ui::elide(&file, (room / char_w) as usize)
+        };
+        let mut toggle_details = false;
+        head.horizontal(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(gap, 0.0);
+            ui.set_height(20.0);
+            ui.add_space(editor::GUTTER);
+            if !file.is_empty() {
                 ui.label(
                     egui::RichText::new(file)
                         .font(theme::font_mono(theme::T_CAP))
                         .color(p.text_faint),
                 );
-                ui.add_space(2.0);
-                if !self.doc.meta.author.trim().is_empty() {
-                    ui::chip(ui, &format!("by {}", self.doc.meta.author.trim()), Some(p.primary));
-                }
-                if !self.doc.meta.draft.trim().is_empty() {
-                    ui::chip(ui, self.doc.meta.draft.trim(), Some(p.sec));
-                }
-                let pg = self.layout.pages;
-                ui::chip(ui, &format!("{pg} page{} · ~{pg} min", if pg == 1 { "" } else { "s" }), None);
-                let before = ui.cursor().min;
-                if ui::chip_button(ui, "+ title page") {
-                    open_title_page = true;
-                }
-                Rect::from_min_size(before, Vec2::new(90.0, 19.0))
-            })
-            .inner;
-        self.title_chip_rect = chip_rect;
-        if open_title_page {
-            self.toggle_popover(Popover::TitlePage);
+                ui.add_space(4.0);
+            }
+            for (t, tint) in &chips {
+                ui::chip(ui, t, *tint);
+            }
+            if ui::chip_button(ui, details_label) {
+                toggle_details = true;
+            }
+        });
+        if toggle_details {
+            self.settings.show_details = !self.settings.show_details;
+            self.save_settings();
         }
         ui.painter().set(banner_bg, banner_shape(band));
         changed
@@ -2045,13 +2283,14 @@ impl App {
         }
     }
 
-    fn pages_page(&mut self, ui: &mut egui::Ui) {
+    fn read_page(&mut self, ui: &mut egui::Ui) {
         let mut jump = None;
         egui::ScrollArea::vertical()
             .id_salt("ns-pages")
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                jump = pages::show(ui, &self.doc, &mut self.pages, self.settings.scene_numbers);
+                let voices = if self.settings.character_colors_reading { self.voices() } else { None };
+                jump = pages::show(ui, &self.doc, &mut self.pages, self.settings.scene_numbers, voices.as_ref());
             });
         if let Some(id) = jump {
             self.mode = Mode::Write;
@@ -2228,7 +2467,6 @@ impl App {
         match self.popover {
             Some(Popover::Menu) => self.more_menu(ctx),
             Some(Popover::Settings) => self.settings_panel(ctx),
-            Some(Popover::TitlePage) => self.title_page_panel(ctx),
             Some(Popover::Snapshots) => self.snapshots_panel(ctx),
             Some(Popover::Elements) => self.elements_menu(ctx),
             None => {}
@@ -2451,85 +2689,6 @@ impl App {
         self.close_popover_if_outside(ctx, &[area.rect, self.element_button_rect]);
     }
 
-    fn title_page_panel(&mut self, ctx: &egui::Context) {
-        let p = pal();
-        let screen = ctx.screen_rect();
-        let anchor = self.title_chip_rect;
-        let mut edited = false;
-        let area = egui::Area::new(egui::Id::new("ns-title-page"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(Pos2::new(
-                anchor.left().min(screen.right() - 340.0).max(screen.left() + 8.0),
-                anchor.bottom() + 8.0,
-            ))
-            .show(ctx, |ui| {
-                ui::popover_frame()
-                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
-                    .show(ui, |ui| {
-                        ui.set_width(300.0);
-                        ui.horizontal(|ui| {
-                            icons::show(ui, Icon::File, 14.0, p.primary);
-                            ui.label(
-                                egui::RichText::new("Title page")
-                                    .font(theme::font_semi(theme::T_H))
-                                    .color(p.text),
-                            );
-                        });
-                        ui.add_space(8.0);
-                        for (label, value, hint) in [
-                            ("Title", &mut self.doc.meta.title, "The Long Way Down"),
-                            ("Written by", &mut self.doc.meta.author, "A. Writer"),
-                            ("Draft", &mut self.doc.meta.draft, "First Draft"),
-                            ("Contact", &mut self.doc.meta.contact, "agent@example.com"),
-                        ] {
-                            ui.label(
-                                egui::RichText::new(label)
-                                    .font(theme::font_med(theme::T_CAP))
-                                    .color(p.text_faint),
-                            );
-                            ui.add_space(-4.0);
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(value)
-                                        .desired_width(f32::INFINITY)
-                                        .margin(egui::Margin::symmetric(10.0, 7.0))
-                                        .hint_text(hint),
-                                )
-                                .changed()
-                            {
-                                edited = true;
-                            }
-                            ui.add_space(2.0);
-                        }
-                        ui.horizontal(|ui| {
-                            if ui::chip_button(ui, "draft: today") {
-                                self.doc.meta.draft = today();
-                                edited = true;
-                            }
-                            if ui::chip_button(ui, "draft: first") {
-                                self.doc.meta.draft = "First Draft".into();
-                                edited = true;
-                            }
-                            if ui::chip_button(ui, "draft: revised") {
-                                self.doc.meta.draft = format!("Revised {}", today());
-                                edited = true;
-                            }
-                        });
-                        ui.add_space(4.0);
-                        ui.label(
-                            egui::RichText::new("Printed on its own page at the front of the PDF, and carried into Final Draft and Fountain.")
-                                .font(theme::font(theme::T_MICRO))
-                                .color(p.text_faint),
-                        );
-                    });
-            })
-            .response;
-        if edited {
-            self.mark_changed();
-        }
-        self.close_popover_if_outside(ctx, &[area.rect, self.title_chip_rect]);
-    }
-
     fn settings_panel(&mut self, ctx: &egui::Context) {
         let p = pal();
         let screen = ctx.screen_rect();
@@ -2559,7 +2718,10 @@ impl App {
 
                         // An Area sizes itself from what it drew last frame, so
                         // give the scroll area its room outright.
-                        let tall = (screen.height() - theme::TOPBAR_H - 58.0).clamp(240.0, 780.0);
+                        // the popover's own header and margins, and a gap of
+                        // backdrop under it, all come out of the window's height
+                        let tall = (screen.height() - theme::TOPBAR_H - 58.0 - 44.0 - theme::GAP)
+                            .clamp(200.0, 780.0);
                         let (body, _) =
                             ui.allocate_exact_size(Vec2::new(304.0, tall), Sense::hover());
                         let mut ui = ui.new_child(
@@ -2569,8 +2731,11 @@ impl App {
                         );
                         let ui = &mut ui;
                         egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
+                                .auto_shrink([false, false])
                             .show(ui, |ui| {
+                                // room on the right for the floating scroll bar,
+                                // so it never lies over a slider's end
+                                ui.set_max_width(ui.available_width() - 12.0);
                                 ui::section(ui, "Theme");
                                 let mut v = self.settings.match_tesseract;
                                 if ui::toggle_row(
@@ -2699,6 +2864,72 @@ impl App {
                                 }
 
                                 ui::separator(ui);
+                                ui::section(ui, "Colour");
+                                let mut v = self.settings.element_colors;
+                                if ui::toggle_row(
+                                    ui,
+                                    "Element colours",
+                                    "A faint band behind each block, one colour per element. Never in Reading mode or on paper.",
+                                    &mut v,
+                                ) {
+                                    self.settings.element_colors = v;
+                                }
+                                let mut v = self.settings.character_colors;
+                                if ui::toggle_row(
+                                    ui,
+                                    "Character colours",
+                                    "Each speaker's name and lines in a colour of their own.",
+                                    &mut v,
+                                ) {
+                                    self.settings.character_colors = v;
+                                }
+                                if self.settings.character_colors {
+                                    let mut v = self.settings.character_colors_reading;
+                                    if ui::toggle_row(ui, "…in Reading mode too", "", &mut v) {
+                                        self.settings.character_colors_reading = v;
+                                    }
+                                    ui.horizontal(|ui| {
+                                        // a live sample of the first few speakers
+                                        let voices = theme::character_colors(
+                                            &self.layout.speakers,
+                                            self.settings.colour_seed,
+                                        );
+                                        for name in self.layout.speakers.iter().take(8) {
+                                            if let Some(c) = voices.get(name) {
+                                                let (r, resp) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                                ui.painter().circle_filled(r.center(), 5.0, *c);
+                                                resp.on_hover_text(name.clone());
+                                            }
+                                        }
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            if ui::button(ui, "Shuffle", Some(Icon::Refresh), false) {
+                                                self.settings.colour_seed = self.settings.colour_seed.wrapping_add(1);
+                                            }
+                                        });
+                                    });
+                                }
+
+                                ui::separator(ui);
+                                ui::section(ui, "Panels");
+                                for (label, hint, key) in [
+                                    ("Details", "Title page and figures · Ctrl+I", 0),
+                                    ("Scenes", "The navigator · Ctrl+Shift+I", 1),
+                                    ("Cast", "Who speaks, and how much", 2),
+                                    ("Library", "Your scripts · Ctrl+B", 3),
+                                ] {
+                                    let slot = match key {
+                                        0 => &mut self.settings.show_details,
+                                        1 => &mut self.settings.show_scenes,
+                                        2 => &mut self.settings.show_cast,
+                                        _ => &mut self.settings.show_library,
+                                    };
+                                    let mut v = *slot;
+                                    if ui::toggle_row(ui, label, hint, &mut v) {
+                                        *slot = v;
+                                    }
+                                }
+
+                                ui::separator(ui);
                                 ui::section(ui, "Library");
                                 let mut v = self.settings.starred_first;
                                 if ui::toggle_row(ui, "Starred at the top", "", &mut v) {
@@ -2768,6 +2999,29 @@ impl App {
                                 }
 
                                 ui::separator(ui);
+                                ui::section(ui, "YouTrack");
+                                ui.label(
+                                    egui::RichText::new("Where View on YouTrack goes")
+                                        .font(theme::font(theme::T_CAP))
+                                        .color(p.text_faint),
+                                );
+                                ui.add_space(2.0);
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.settings.youtrack_url)
+                                        .id(egui::Id::new("ns-youtrack-url"))
+                                        .desired_width(f32::INFINITY)
+                                        .font(theme::font_mono(theme::T_CAP))
+                                        .margin(egui::Margin::symmetric(10.0, 6.0))
+                                        .hint_text(crate::settings::DEFAULT_YOUTRACK),
+                                );
+                                if self.settings.youtrack_url.trim() != crate::settings::DEFAULT_YOUTRACK {
+                                    ui.add_space(2.0);
+                                    if ui::chip_button(ui, "reset to the default") {
+                                        self.settings.youtrack_url = crate::settings::DEFAULT_YOUTRACK.to_string();
+                                    }
+                                }
+
+                                ui::separator(ui);
                                 ui::section(ui, "Where things live");
                                 ui.label(
                                     egui::RichText::new(short_home(&storage::scripts_dir()))
@@ -2786,7 +3040,7 @@ impl App {
                                 ui.add_space(8.0);
                                 ui.label(
                                     egui::RichText::new(format!(
-                                        "Page font: {} · Northstar {} · Starforge Software",
+                                        "Page font: {} · Northstar {} · MarkedExiled Software",
                                         theme::PAGE_FONT_NAME,
                                         env!("CARGO_PKG_VERSION")
                                     ))
@@ -2850,8 +3104,12 @@ impl App {
             self.settings.show_library = !self.settings.show_library;
             self.save_settings();
         }
-        if hit(Modifiers::COMMAND, Key::I) {
+        // the more specific chord first: egui lets an extra Shift through
+        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::I) {
             self.settings.show_scenes = !self.settings.show_scenes;
+            self.save_settings();
+        } else if hit(Modifiers::COMMAND, Key::I) {
+            self.settings.show_details = !self.settings.show_details;
             self.save_settings();
         }
         if hit(Modifiers::COMMAND, Key::E) {
@@ -3152,6 +3410,15 @@ impl App {
     }
     pub fn debug_row_rect(&self, path: &Path) -> Option<Rect> {
         self.rail.last_rects.get(path).copied()
+    }
+    pub fn debug_foot_rect(&self) -> Rect {
+        self.foot_rect
+    }
+    pub fn debug_aside_rect(&self) -> Rect {
+        self.aside_rect
+    }
+    pub fn settings_mut(&mut self) -> &mut Settings {
+        &mut self.settings
     }
     pub fn debug_session_words(&self) -> i64 {
         self.session_words
@@ -3528,4 +3795,98 @@ fn starter_document() -> Document {
         b.note = "The writer faces the empty page.".to_string();
     }
     doc
+}
+
+/// The way to the project's tracker, dressed the way YouTrack dresses its own
+/// buttons: a dark, quiet slab with the product's mark at the left, which
+/// takes YouTrack's pink-to-violet glow when you reach for it.
+fn youtrack_button(ui: &mut egui::Ui, url: &str) -> bool {
+    let p = pal();
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.16);
+    let pink = Color32::from_rgb(0xFF, 0x31, 0x8C);
+    let violet = Color32::from_rgb(0x6B, 0x57, 0xFF);
+
+    if hot > 0.02 {
+        theme::glow_rect(ui.painter(), rect, theme::R_CTRL, theme::mix(pink, violet, 0.5), 14.0, hot * 0.45);
+    }
+    let base = if p.dark {
+        theme::mix(p.raised, Color32::from_rgb(0x19, 0x19, 0x1C), 0.5)
+    } else {
+        p.solid_hi
+    };
+    ui.painter().rect_filled(rect, egui::Rounding::same(theme::R_CTRL), base);
+    // the rim takes YouTrack's gradient as you reach for it
+    theme::fill_grad_poly(
+        ui.painter(),
+        &theme::rounded_poly(rect, theme::R_CTRL),
+        theme::wash(pink, (26.0 * hot) as u8),
+        theme::wash(violet, (26.0 * hot) as u8),
+        Vec2::new(1.0, 0.2),
+    );
+    ui.painter().rect_stroke(
+        rect.shrink(0.5),
+        egui::Rounding::same(theme::R_CTRL),
+        Stroke::new(1.0_f32, theme::mix(theme::wash(p.text_faint, 50), theme::mix(pink, violet, 0.4), hot)),
+    );
+
+    let mark = Rect::from_center_size(Pos2::new(rect.left() + 20.0, rect.center().y), Vec2::splat(20.0));
+    youtrack_logo(ui.painter(), mark);
+    ui.painter().text(
+        Pos2::new(rect.left() + 38.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        "View on YouTrack",
+        theme::font_semi(theme::T_SM),
+        theme::mix(p.text_dim, p.text, hot),
+    );
+    icons::draw(
+        ui.painter(),
+        Rect::from_center_size(Pos2::new(rect.right() - 16.0, rect.center().y), Vec2::splat(12.0)),
+        Icon::External,
+        theme::mix(p.text_faint, theme::lighten(pink, 0.3), hot),
+    );
+    resp.on_hover_text(url.to_string()).clicked()
+}
+
+/// YouTrack's product mark, drawn from primitives like every other icon here:
+/// the gradient tile in YouTrack's pink, violet and cyan, with the black
+/// square carrying the white "YT" and its bar.
+pub fn youtrack_logo(painter: &egui::Painter, rect: Rect) {
+    let s = rect.width().min(rect.height());
+    let r = Rect::from_center_size(rect.center(), Vec2::splat(s));
+    let pink = Color32::from_rgb(0xFF, 0x31, 0x8C);
+    let violet = Color32::from_rgb(0x6B, 0x57, 0xFF);
+    let cyan = Color32::from_rgb(0x07, 0xC3, 0xF2);
+    // the tile: pink at the top left, violet across, cyan at the foot
+    theme::grad_rect(painter, r, s * 0.18, pink, violet, Vec2::new(1.0, 0.6));
+    let corner = Rect::from_min_max(
+        Pos2::new(r.left() + s * 0.45, r.top() + s * 0.45),
+        r.max,
+    );
+    theme::fill_grad_poly(
+        painter,
+        &theme::rounded_poly(corner, s * 0.18),
+        theme::wash(cyan, 0),
+        theme::wash(cyan, 230),
+        Vec2::new(0.7, 1.0),
+    );
+    // the black square, and the letters on it
+    let inner = Rect::from_min_max(
+        Pos2::new(r.left() + s * 0.17, r.top() + s * 0.17),
+        Pos2::new(r.right() - s * 0.17, r.bottom() - s * 0.17),
+    );
+    painter.rect_filled(inner, egui::Rounding::same(s * 0.04), Color32::BLACK);
+    painter.text(
+        Pos2::new(inner.left() + s * 0.08, inner.top() + s * 0.02),
+        egui::Align2::LEFT_TOP,
+        "YT",
+        theme::font_bold(s * 0.33),
+        Color32::WHITE,
+    );
+    let bar = Rect::from_min_size(
+        Pos2::new(inner.left() + s * 0.09, inner.bottom() - s * 0.15),
+        Vec2::new(s * 0.30, s * 0.055),
+    );
+    painter.rect_filled(bar, egui::Rounding::ZERO, Color32::WHITE);
 }

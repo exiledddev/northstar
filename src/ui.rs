@@ -9,7 +9,7 @@
 //! Two rules run through the lot: nothing draws a box until you reach for it,
 //! and everything that lights up lights up *from the glyph outward*.
 
-// The Starforge kit is kept whole and in step with Tesseract's copy: a
+// The shared kit is kept whole and in step with Tesseract's copy: a
 // primitive with no caller in Northstar today is still part of the language.
 #![allow(dead_code)]
 

@@ -2,9 +2,9 @@
 //!
 //! Scripts are plain markdown on disk; the editor formats them to standard
 //! master-scene screenplay geometry and exports print-ready PDF. Drawn in the
-//! Starforge design language it shares with Tesseract.
+//! design language it shares with Tesseract.
 //!
-//! Starforge Software.
+//! MarkedExiled Software.
 
 #[cfg(test)]
 mod tests;

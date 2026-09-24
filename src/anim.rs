@@ -4,7 +4,7 @@
 //! curves stay consistent, and one switch in Settings turns the whole lot off
 //! without any call site needing to know.
 
-// The Starforge kit is kept whole and in step with Tesseract's copy: a
+// The shared kit is kept whole and in step with Tesseract's copy: a
 // primitive with no caller in Northstar today is still part of the language.
 #![allow(dead_code)]
 

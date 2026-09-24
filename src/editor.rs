@@ -6,7 +6,7 @@
 //! every mutation out of the render pass, which is what stops the borrow
 //! checker and the layout from fighting each other.
 //!
-//! The look follows the Starforge design language Tesseract set down: the
+//! The look follows the design language Tesseract set down: the
 //! page is the island itself, so nothing here draws a box. The block you are
 //! in gets a wash of the accent that fades away to the right; a scene heading
 //! carries a four-pointed star in the gutter — Northstar's marker, standing
@@ -19,7 +19,7 @@ use eframe::egui::{self, text::CCursor, Key, Modifiers, Pos2, Rect, Sense, Vec2}
 
 use crate::anim;
 use crate::caret;
-use crate::model::{complete, guess_element, Document, Element, PAGE_COLS};
+use crate::model::{base_character, complete, guess_element, Document, Element, PAGE_COLS};
 use crate::theme::{self, pal};
 
 /// Room to the left of the text column for the element tag and the star.
@@ -104,6 +104,10 @@ pub struct View<'a> {
     pub find: Option<&'a str>,
     /// The result Find is on: (block, first character).
     pub current: Option<(u64, usize)>,
+    /// A faint band behind each block in its element's colour.
+    pub element_colors: bool,
+    /// Each speaker's colour, when their lines should wear it.
+    pub char_colors: Option<&'a HashMap<String, egui::Color32>>,
 }
 
 /// Retype the focused block. Used by the palette and Ctrl+1..7.
@@ -218,10 +222,22 @@ fn page_body(
     let mut in_scene: Option<usize> = None;
 
     let needle = view.find.map(|s| s.to_lowercase()).filter(|s| !s.is_empty());
+    // who is talking: a cue starts it, its parentheticals and dialogue carry
+    // it, anything else ends it
+    let mut speaker: Option<String> = None;
 
     for i in 0..doc.blocks.len() {
         let bid = doc.blocks[i].id;
         let element = doc.blocks[i].element;
+        match element {
+            Element::Character => speaker = Some(base_character(&doc.blocks[i].text)),
+            Element::Parenthetical | Element::Dialogue => {}
+            _ => speaker = None,
+        }
+        let voice = speaker
+            .as_ref()
+            .and_then(|n| view.char_colors.and_then(|m| m.get(n)))
+            .copied();
         let id = block_id(bid);
         let focused = ui.memory(|m| m.has_focus(id));
         if element == Element::SceneHeading {
@@ -319,7 +335,12 @@ fn page_body(
         let bg_idx = ui.painter().add(egui::Shape::Noop);
         let indent_px = element.indent_cols() as f32 * char_w;
         let width_px = element.width_cols() as f32 * char_w;
-        let ink = theme::element_ink(element);
+        let ink = match voice {
+            // a speaker's colour, held back a little for the parenthetical
+            Some(v) if element == Element::Parenthetical => theme::mix(v, p.text_dim, 0.35),
+            Some(v) => v,
+            None => theme::element_ink(element),
+        };
         let ink = if dimmed { theme::wash(ink, 70) } else { ink };
 
         let row_top = ui.cursor().top();
@@ -392,15 +413,51 @@ fn page_body(
         let row = response.rect;
         let lit = anim::ease(ui.ctx(), ("ns-wash", bid), focused, 0.24);
         let mut under: Vec<egui::Shape> = Vec::new();
+        // the element's band: where its text may run, in its colour
+        if view.element_colors && !dimmed {
+            // The band hugs the words themselves rather than the whole column
+            // the element may use, so the page reads as text with a tint
+            // under it, not as a stack of bars. A thin tick at its left edge,
+            // in the element's own colour, is what the eye actually sorts by.
+            let words = output.galley.rect.translate(output.galley_pos.to_vec2());
+            let text_left = content_left + GUTTER + indent_px;
+            let right = if doc.blocks[i].text.is_empty() {
+                text_left + char_w * 8.0
+            } else {
+                words.right().max(text_left + char_w * 4.0)
+            };
+            let band = Rect::from_min_max(
+                Pos2::new(text_left - 7.0, row.top() - 1.5),
+                Pos2::new((right + 7.0).min(col.right() - 2.0), row.bottom() + 1.5),
+            );
+            // a speech wears its speaker's colour, when characters have them
+            let (fill, tick) = match voice {
+                Some(v) => (theme::wash(v, if p.dark { 8 } else { 12 }), v),
+                None => (theme::element_band(element), theme::element_color(element)),
+            };
+            under.push(egui::Shape::rect_filled(band, egui::Rounding::same(5.0), fill));
+            if element != Element::Action || voice.is_some() {
+                under.push(egui::Shape::rect_filled(
+                    Rect::from_min_size(
+                        Pos2::new(band.left(), band.top() + 3.0),
+                        Vec2::new(2.0, (band.height() - 6.0).max(4.0)),
+                    ),
+                    egui::Rounding::same(1.0),
+                    theme::wash(tick, if p.dark { 150 } else { 170 }),
+                ));
+            }
+        }
         if lit > 0.01 {
-            // a wash that fades away to the right, not a bordered card
+            // A wash that fades away to the right, not a bordered card. It
+            // takes in the gutter, so the element's tag sits inside the light
+            // with its line rather than outside it.
             let plate = Rect::from_min_max(
-                Pos2::new(content_left + STAR_X + 14.0, row.top() - 7.0),
-                Pos2::new(col.right(), row.bottom() + 5.0),
+                Pos2::new(content_left + 2.0, row.top() - 6.0),
+                Pos2::new(col.right(), row.bottom() + 6.0),
             );
             under.push(theme::grad_poly_shape(
                 &theme::rounded_poly(plate, theme::R_CARD),
-                theme::wash(p.primary, (30.0 * lit) as u8),
+                theme::wash(p.primary, (34.0 * lit) as u8),
                 theme::wash(p.primary, 0),
                 Vec2::new(1.0, 0.0),
             ));

@@ -151,7 +151,21 @@ pub struct Settings {
     pub after_export: AfterExport,
     /// Words to write per session; 0 is off.
     pub session_goal: u32,
+    /// The script's details — title page and figures — as a panel on the right.
+    pub show_details: bool,
+    /// A faint band behind each block in Write, in its element's colour.
+    pub element_colors: bool,
+    /// Each speaking character's name and lines in a colour of their own.
+    pub character_colors: bool,
+    /// ... and in Reading mode too, not only while writing.
+    pub character_colors_reading: bool,
+    /// Turns the character colour wheel; Shuffle bumps it.
+    pub colour_seed: u32,
+    /// Where "View on YouTrack", at the foot of the library, goes.
+    pub youtrack_url: String,
 }
+
+pub const DEFAULT_YOUTRACK: &str = "https://markedexiled.youtrack.cloud/dashboard?id=177-0";
 
 impl Default for Settings {
     fn default() -> Self {
@@ -177,6 +191,12 @@ impl Default for Settings {
             typewriter: false,
             after_export: AfterExport::Open,
             session_goal: 0,
+            show_details: false,
+            element_colors: true,
+            character_colors: false,
+            character_colors_reading: false,
+            colour_seed: 0,
+            youtrack_url: DEFAULT_YOUTRACK.to_string(),
         }
     }
 }
@@ -206,7 +226,13 @@ impl Settings {
              smart_type = {}\n\
              typewriter = {}\n\
              after_export = {}\n\
-             session_goal = {}\n",
+             session_goal = {}\n\
+             show_details = {}\n\
+             element_colors = {}\n\
+             character_colors = {}\n\
+             character_colors_reading = {}\n\
+             colour_seed = {}\n\
+             youtrack_url = {}\n",
             self.theme.slug(),
             b(self.light_mode),
             b(self.animations),
@@ -228,6 +254,12 @@ impl Settings {
             b(self.typewriter),
             self.after_export.slug(),
             self.session_goal,
+            b(self.show_details),
+            b(self.element_colors),
+            b(self.character_colors),
+            b(self.character_colors_reading),
+            self.colour_seed,
+            self.youtrack_url.trim(),
         )
     }
 
@@ -269,6 +301,18 @@ impl Settings {
                 "typewriter" => s.typewriter = yes(v),
                 "after_export" => s.after_export = AfterExport::from_slug(v),
                 "session_goal" => s.session_goal = v.parse::<u32>().unwrap_or(0).min(20_000),
+                "show_details" => s.show_details = yes(v),
+                "element_colors" => s.element_colors = yes(v),
+                "character_colors" => s.character_colors = yes(v),
+                "character_colors_reading" => s.character_colors_reading = yes(v),
+                "colour_seed" => s.colour_seed = v.parse::<u32>().unwrap_or(0),
+                "youtrack_url" => {
+                    s.youtrack_url = if v.is_empty() {
+                        DEFAULT_YOUTRACK.to_string()
+                    } else {
+                        v.to_string()
+                    }
+                }
                 _ => {}
             }
         }

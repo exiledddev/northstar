@@ -1,6 +1,6 @@
 # Northstar
 
-**A screenwriting studio for Linux.** By Starforge Software.
+**A screenwriting studio for Linux.** By MarkedExiled Software.
 
 It behaves like a notes app — open it, type, it saves itself — but every
 paragraph is a typed screenplay element, laid out to standard master-scene
@@ -17,6 +17,8 @@ look; and with **Match Tesseract** on (the default) it wears whatever theme
 Tesseract is wearing, live.
 
 ![Tesseract above, Northstar below, in the same theme](docs/northstar-with-tesseract.png)
+
+![Northstar in the JetBrains theme, with character colours and every panel open](docs/northstar-jetbrains.png)
 
 ---
 
@@ -98,17 +100,33 @@ heading carries a four-pointed star in the gutter that lights while you are in
 its scene. A faint rule marks where each printed page will begin, numbered the
 way the PDF numbers it.
 
+Each element is signalled by a faint band under its words and a thin tick at
+its left edge, in its own colour — scene headings in the theme's warm energy
+colour, cues in its accent, dialogue, parentheticals, transitions and shots in
+four more of its hues, and action left neutral. Settings → **Element colours**
+turns it off. None of it ever reaches Reading mode or the page.
+
+**Character colours** (Settings, off until you want them) give every speaking
+character a colour of their own — their cue and everything they say. Colours
+are dealt out in order of first appearance, so a new character never repaints
+the others; **Shuffle** deals them again. They can follow you into Reading
+mode too, or stay in the editor.
+
 **Cards** — every scene as an index card: its number, heading, where it falls
 and how long it runs (in eighths of a page), who speaks in it, and a synopsis
 you write straight onto the card. Drag a card by its head to move the whole
 scene; right-click for a card colour or to delete the scene (it asks first,
 and `Ctrl+Z` brings it back).
 
-**Pages** — the script exactly as it will print, title page first, drawn from
-the same layout pass the PDF is written from. Two pages side by side when there
-is room. Click any line to go and write it.
+**Read** — Reading mode: the script exactly as it will print, typeset, title
+page first, drawn from the same layout pass the PDF is written from — no
+bands, tags or stars. Two pages side by side when there is room. Click any
+line to go and write it.
 
-On the right, the **scene navigator** lists every scene on a mini rail of its
+On the right, **Details** (`Ctrl+I`, or the ⓘ in the ribbon) is the script's
+title page — title, author, draft, contact — and what the script adds up to:
+pages, running time, scenes, speaking parts, words, and how much is dialogue.
+Under it, the **scene navigator** (`Ctrl+Shift+I`) lists every scene on a mini rail of its
 own, with the page it starts on, its length in eighths and its word count;
 click one to jump to it. **Cast** lists everyone who speaks, most lines first —
 click a name to step through their cues — and shows how much of the script is
@@ -138,9 +156,10 @@ and the type decides the indent, the width, and whether it is forced to caps.
 | `Ctrl+E` | Quick Export: PDF, then open it (or show it, or nothing — Settings) |
 | `Ctrl+F` / `Ctrl+H` | Find and replace in the script |
 | `Ctrl+Shift+F` | Filter the library |
-| `Ctrl+G` | Write → Cards → Pages |
+| `Ctrl+G` | Write → Cards → Read |
 | `Ctrl+B` | Show / hide the library |
-| `Ctrl+I` | Show / hide the scene navigator |
+| `Ctrl+I` | Show / hide the script's details |
+| `Ctrl+Shift+I` | Show / hide the scene navigator |
 | `Ctrl+.` | Focus: hide both side islands and dim everything outside this scene |
 | `Ctrl+±` | Page text bigger / smaller (remembered) |
 | `Ctrl+,` | Settings |
@@ -253,10 +272,13 @@ too, so nothing is ever lost.
 
 ## Settings
 
-Theme (five, each light or dark: Zen, Ember, Frostbite, Bloodmoon, Void — the
-same five as Tesseract), **Match Tesseract**, animations, window blur, how solid
+Theme (six, each light or dark: Zen, Ember, Frostbite, Bloodmoon and Void —
+the same five as Tesseract — plus **JetBrains**, orange into magenta into
+violet on a near-black ground), **Match Tesseract**, animations, window blur, how solid
 the glass is, interface size, page text size, page breaks in the editor, scene
-numbers, SmartType, typewriter scrolling, how the library sorts, a session word
+numbers, SmartType, typewriter scrolling, element colours, character colours
+(and whether Reading mode shows them), which panels are open, the **View on
+YouTrack** link, how the library sorts, a session word
 goal (shown as a track in the ribbon), the splash screen, what Quick Export does
 with the PDF, and how long the app waits before saving.
 
@@ -264,6 +286,15 @@ With **Match Tesseract** on, theme, light/dark, glass, blur and motion are read
 from `~/.local/share/tesseract/settings.conf` and followed as Tesseract changes
 them. Choosing a look by hand in Northstar turns matching off. Without
 Tesseract installed, Northstar starts in Bloodmoon, its own red.
+
+---
+
+## View on YouTrack
+
+At the foot of the library, above the maker's name, **View on YouTrack** opens
+the project's tracker in your browser —
+`https://markedexiled.youtrack.cloud/dashboard?id=177-0` unless you point it
+somewhere else in Settings → YouTrack.
 
 ---
 
@@ -281,7 +312,7 @@ and goes.
 ## Development
 
 ```bash
-cargo test          # 55 tests: behaviour, files, formats, and headless UI
+cargo test          # 60 tests: behaviour, files, formats, and headless UI
 cargo build --release
 ./target/release/northstar --emit-icon icon.svg   # the mark, as the app draws it
 ```
@@ -298,9 +329,9 @@ Tesseract theme-following are all exercised for real.
 | `src/export.rs` | Line composition, pagination, page map, scene lengths, PDF/FDX/Fountain/text |
 | `src/fountain.rs` | Fountain and Final Draft readers |
 | `src/editor.rs` | The page: block rendering and every structural keystroke |
-| `src/cards.rs` / `src/pages.rs` | The other two views |
+| `src/cards.rs` / `src/pages.rs` | Cards, and Reading mode |
 | `src/app.rs` | Shell — ribbon, library, navigator, popovers, autosave, undo |
-| `src/theme.rs` `anim.rs` `ui.rs` `icons.rs` `alerts.rs` `chrome.rs` `blur.rs` `splash.rs` | The Starforge design system, kept in step with Tesseract's |
+| `src/theme.rs` `anim.rs` `ui.rs` `icons.rs` `alerts.rs` `chrome.rs` `blur.rs` `splash.rs` | The design system, kept in step with Tesseract's |
 | `src/logo.rs` | The mark and the launcher icon |
 | `src/caret.rs` | The only place that touches egui's text-cursor internals |
 

@@ -469,7 +469,7 @@ fn pages_draw_the_title_page_and_every_printed_page() {
     }
     d.reseed_ids();
     h.load(d);
-    h.app.set_mode(Mode::Pages);
+    h.app.set_mode(Mode::Read);
     h.frames(3);
     assert_eq!(h.app.debug_sheet_count(), 1 + crate::export::page_count(h.app.doc()));
 }
@@ -481,7 +481,7 @@ fn ctrl_g_steps_through_the_three_views() {
     h.press(Key::G, Modifiers::COMMAND);
     assert_eq!(h.app.mode(), Mode::Cards);
     h.press(Key::G, Modifiers::COMMAND);
-    assert_eq!(h.app.mode(), Mode::Pages);
+    assert_eq!(h.app.mode(), Mode::Read);
     h.press(Key::G, Modifiers::COMMAND);
     assert_eq!(h.app.mode(), Mode::Write);
 }
@@ -594,7 +594,7 @@ fn every_theme_paints_every_view_without_panicking() {
     for t in ThemeId::ALL {
         for light in [false, true] {
             h.app.debug_set_theme(t, light);
-            for m in [Mode::Write, Mode::Cards, Mode::Pages] {
+            for m in [Mode::Write, Mode::Cards, Mode::Read] {
                 h.app.set_mode(m);
                 h.frames(2);
             }
@@ -607,7 +607,7 @@ fn every_theme_paints_every_view_without_panicking() {
 fn every_view_holds_at_the_minimum_window_size() {
     let mut h = Harness::with(880.0, 580.0, "show_cast = yes\n");
     h.load(three_scenes());
-    for m in [Mode::Write, Mode::Cards, Mode::Pages] {
+    for m in [Mode::Write, Mode::Cards, Mode::Read] {
         h.app.set_mode(m);
         h.frames(3);
         let page = h.app.debug_page_rect();
@@ -638,4 +638,60 @@ fn nothing_is_drawn_outside_the_block_being_typed_into() {
     h.focus(id);
     let r = h.block_rect(id).expect("drawn");
     assert!(h.app.debug_page_rect().contains_rect(r.shrink(1.0)), "{r:?}");
+}
+
+#[test]
+fn the_library_foot_ends_level_with_the_other_islands() {
+    let mut h = Harness::with(1320.0, 900.0, "show_details = yes\n");
+    let foot = h.app.debug_foot_rect();
+    let page = h.app.debug_page_rect();
+    // the library island has a 14px inner margin under its last line; its
+    // outer edge must be exactly where the page island's is
+    assert!(
+        (foot.bottom() + 14.0 - page.bottom()).abs() < 1.5,
+        "foot ends at {}, page island at {}",
+        foot.bottom(),
+        page.bottom()
+    );
+    let aside = h.app.debug_aside_rect();
+    assert!((aside.bottom() - page.bottom()).abs() < 1.5);
+    h.app.debug_set_theme(ThemeId::JetBrains, false);
+    h.frames(2);
+    assert_eq!(theme::pal().id, ThemeId::JetBrains);
+}
+
+#[test]
+fn ctrl_i_shows_the_details_and_ctrl_shift_i_the_scenes() {
+    let mut h = Harness::new();
+    assert!(!h.app.settings().show_details);
+    let scenes = h.app.settings().show_scenes;
+    h.press(Key::I, Modifiers::COMMAND);
+    assert!(h.app.settings().show_details);
+    assert_eq!(h.app.settings().show_scenes, scenes, "only the details moved");
+    h.press(Key::I, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(h.app.settings().show_scenes, !scenes);
+    assert!(h.app.settings().show_details, "and only the scenes moved");
+    assert!(storage::read_settings().show_details, "remembered");
+}
+
+#[test]
+fn every_colour_option_paints_every_view() {
+    let mut h = Harness::with(880.0, 580.0, "show_details = yes\nshow_cast = yes\n");
+    h.load(three_scenes());
+    for (elements, voices, reading) in [(true, false, false), (false, true, false), (true, true, true)] {
+        {
+            let s = h.app.settings_mut();
+            s.element_colors = elements;
+            s.character_colors = voices;
+            s.character_colors_reading = reading;
+        }
+        for m in [Mode::Write, Mode::Cards, Mode::Read] {
+            h.app.set_mode(m);
+            h.frames(2);
+        }
+    }
+    // at the smallest window, with every panel open, nothing runs off the
+    // bottom of the right-hand column
+    let aside = h.app.debug_aside_rect();
+    assert!(aside.bottom() <= 580.0 - 14.0 + 1.0, "{aside:?}");
 }

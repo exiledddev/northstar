@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.76"
 description = "A screenwriting studio for Linux — markdown in, industry format out."
 license = "MIT"
-authors = ["Starforge Software"]
+authors = ["MarkedExiled Software"]
 
 [dependencies]
 # egui is re-exported by eframe (eframe::egui) so the versions can never drift.

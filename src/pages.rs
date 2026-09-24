@@ -1,7 +1,9 @@
-//! Pages: the script exactly as it will print.
+//! Reading mode: the script exactly as it will print.
 //!
 //! Drawn from the same composition pass the PDF is written from, so a line
-//! that ends a page here ends the page on paper. Each sheet is a solid
+//! that ends a page here ends the page on paper. None of the editor's
+//! scaffolding comes through — no element bands, no tags, no stars — only
+//! the typeset page (and, if asked for, each speaker's colour). Each sheet is a solid
 //! surface laid on the island — something you read — with the island's own
 //! soft shadow, and two sheets sit side by side when there is room. Click a
 //! line to go and write it.
@@ -9,7 +11,7 @@
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 
 use crate::export::{compose, paginate, Line};
-use crate::model::{Document, Element, LINES_PER_PAGE, PAGE_COLS};
+use crate::model::{base_character, Document, Element, LINES_PER_PAGE, PAGE_COLS};
 use crate::theme::{self, pal};
 
 /// US letter, 8.5 by 11.
@@ -28,9 +30,33 @@ pub fn show(
     doc: &Document,
     st: &mut PagesState,
     scene_numbers: bool,
+    voices: Option<&std::collections::HashMap<String, egui::Color32>>,
 ) -> Option<u64> {
     let p = pal();
     let pages = paginate(&compose(doc));
+    // who is speaking on every line, worked out once across all the pages so
+    // a speech that runs over a page break keeps its colour
+    let mut speaking: Vec<Vec<Option<egui::Color32>>> = Vec::with_capacity(pages.len());
+    {
+        let mut who: Option<String> = None;
+        for page in &pages {
+            let mut row = Vec::with_capacity(page.len());
+            for line in page {
+                match line.element {
+                    Some(Element::Character) => {
+                        let n = base_character(&line.text);
+                        if !n.is_empty() {
+                            who = Some(n);
+                        }
+                    }
+                    Some(Element::Dialogue) | Some(Element::Parenthetical) | None => {}
+                    _ => who = None,
+                }
+                row.push(who.as_ref().and_then(|n| voices.and_then(|m| m.get(n))).copied());
+            }
+            speaking.push(row);
+        }
+    }
     let avail = ui.available_width() - 2.0 * GAP;
     let two_up = avail >= 2.0 * 460.0 + GAP;
     let page_w = if two_up {
@@ -120,8 +146,9 @@ pub fn show(
             let y = body_top + row as f32 * line_h;
             let x = text_left + line.indent as f32 * char_w;
             let is_heading = matches!(line.element, Some(Element::SceneHeading));
-            let color = match line.element {
-                Some(Element::Parenthetical) | Some(Element::Transition) => {
+            let color = match (speaking[n - 1][row], line.element) {
+                (Some(v), _) => v,
+                (None, Some(Element::Parenthetical)) | (None, Some(Element::Transition)) => {
                     theme::mix(ink, p.text_dim, 0.4)
                 }
                 _ => ink,

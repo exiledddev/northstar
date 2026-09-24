@@ -75,6 +75,8 @@ pub enum Icon {
     Upload,
     History,
     Star4,
+    Book,
+    External,
 }
 
 /// Paint `icon` inside `rect`.
@@ -614,6 +616,19 @@ pub fn draw_weighted(
             line(arc);
             line(vec![p(0.14, 0.22), p(0.18, 0.36), p(0.32, 0.32)]);
             line(vec![p(0.52, 0.34), p(0.52, 0.54), p(0.66, 0.62)]);
+        }
+
+        Icon::Book => {
+            // an open book: two pages meeting at a spine
+            line(vec![p(0.50, 0.30), p(0.40, 0.24), p(0.14, 0.22), p(0.14, 0.76), p(0.40, 0.78), p(0.50, 0.84)]);
+            line(vec![p(0.50, 0.30), p(0.60, 0.24), p(0.86, 0.22), p(0.86, 0.76), p(0.60, 0.78), p(0.50, 0.84)]);
+            seg(p(0.50, 0.30), p(0.50, 0.84));
+        }
+
+        Icon::External => {
+            line(vec![p(0.44, 0.20), p(0.20, 0.20), p(0.20, 0.80), p(0.80, 0.80), p(0.80, 0.56)]);
+            line(vec![p(0.58, 0.20), p(0.80, 0.20), p(0.80, 0.42)]);
+            seg(p(0.80, 0.20), p(0.46, 0.54));
         }
 
         Icon::Star4 => {

@@ -356,7 +356,19 @@ fn settings_round_trip_and_share_tesseract_s_keys() {
     s.session_goal = 750;
     s.page_px = 19.0;
     s.scene_numbers = true;
-    assert_eq!(Settings::parse(&s.serialize()), s);
+    s.show_details = true;
+    s.element_colors = false;
+    s.character_colors = true;
+    s.character_colors_reading = true;
+    s.colour_seed = 7;
+    s.youtrack_url = "https://example.youtrack.cloud/issues?q=for:me&sort=updated".into();
+    assert_eq!(Settings::parse(&s.serialize()), s, "a link full of = and & survives");
+    let d = Settings::default();
+    assert_eq!(d.youtrack_url, "https://markedexiled.youtrack.cloud/dashboard?id=177-0");
+    assert!(d.element_colors && !d.character_colors && !d.show_details);
+    assert_eq!(Settings::parse("youtrack_url =\n").youtrack_url, d.youtrack_url, "an empty link falls back");
+    s.theme = ThemeId::JetBrains;
+    assert_eq!(Settings::parse(&s.serialize()).theme, ThemeId::JetBrains);
 
     // a file Tesseract wrote: its look is taken, nothing else
     let tess = "theme = frostbite\nlight_mode = yes\nanimations = no\nblur = always\nglass_opacity = 0.80\nshow_grid = no\nautosave_ms = 300\n";
@@ -475,4 +487,49 @@ fn the_icon_is_an_svg_drawn_from_the_mark() {
     let s = crate::logo::svg();
     assert!(s.starts_with("<svg"));
     assert_eq!(s.matches("<polygon").count(), 16, "eight rays, two facets each");
+}
+
+#[test]
+fn every_speaker_gets_a_colour_of_their_own_that_does_not_move() {
+    crate::theme::set_palette(ThemeId::JetBrains, true);
+    let names: Vec<String> = ["MARIA", "COLE", "JONAH", "ADA", "THE WRITER", "RUTH", "KAI"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let a = crate::theme::character_colors(&names, 0);
+    let distinct: std::collections::HashSet<_> = a.values().map(|c| c.to_array()).collect();
+    assert_eq!(distinct.len(), names.len(), "no two speakers share a colour");
+    // someone new arrives: nobody else changes colour
+    let mut more = names.clone();
+    more.push("NEWCOMER".into());
+    let b = crate::theme::character_colors(&more, 0);
+    for n in &names {
+        assert_eq!(a[n], b[n], "{n} kept their colour");
+    }
+    // Shuffle turns the wheel
+    let c = crate::theme::character_colors(&names, 1);
+    assert_ne!(a["MARIA"], c["MARIA"]);
+    // readable on the page in both casts
+    for dark in [true, false] {
+        crate::theme::set_palette(ThemeId::Zen, dark);
+        for col in crate::theme::character_colors(&names, 3).values() {
+            let l = 0.299 * col.r() as f32 + 0.587 * col.g() as f32 + 0.114 * col.b() as f32;
+            if dark {
+                assert!(l > 120.0, "light enough on a dark page: {col:?}");
+            } else {
+                assert!(l < 150.0, "dark enough on a white page: {col:?}");
+            }
+        }
+    }
+    assert_eq!(three_scenes().speakers(), vec!["MARIA".to_string(), "COLE".to_string()]);
+}
+
+#[test]
+fn the_jetbrains_theme_is_one_of_the_set() {
+    assert_eq!(ThemeId::from_slug("jetbrains"), Some(ThemeId::JetBrains));
+    let p = crate::theme::palette(ThemeId::JetBrains, true);
+    // the near-black ground and the warm end of the arches
+    assert!(p.backdrop.r() < 0x20 && p.backdrop.g() < 0x20);
+    assert!(p.sec_grad.1.r() > 0xF0 && p.sec_grad.1.g() > 0xA0, "marigold");
+    assert_eq!(ThemeId::ALL.len(), 6);
 }

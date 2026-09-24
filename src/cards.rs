@@ -349,18 +349,30 @@ fn draw_card(
     let painter = ui.painter();
     let radius = theme::R_CARD;
 
-    theme::glow_rect(painter, r, radius, accent, 22.0, (0.10 + 0.22 * lift) * fade);
+    // On a white page a resting glow is a grey smudge, not light: there the
+    // cards only glow when you reach for one.
+    let rest = if p.dark { 0.10 } else { 0.0 };
+    theme::glow_rect(painter, r, radius, accent, 22.0, (rest + 0.22 * lift) * fade);
     if selected {
         theme::glow_rect(painter, r, radius, p.primary, 26.0, 0.30 * fade);
     }
-    if !p.dark {
+    if p.dark {
+        theme::glass_surface(painter, r, radius, (if selected { 0.96 } else { 0.86 }) * fade);
+    } else {
+        // light glass over the white island is tinted down to grey; a card
+        // wants to be paper — a contact shadow, a white body, a lit rim
         painter.rect_filled(
             r.translate(Vec2::new(0.0, 2.0)),
             egui::Rounding::same(radius),
-            egui::Color32::from_black_alpha((14.0 * fade) as u8),
+            egui::Color32::from_black_alpha((16.0 * fade) as u8),
+        );
+        painter.rect_filled(r, egui::Rounding::same(radius), theme::wash(p.raised, (255.0 * fade) as u8));
+        painter.rect_stroke(
+            r.shrink(0.5),
+            egui::Rounding::same(radius),
+            egui::Stroke::new(1.0_f32, theme::wash(p.line, (255.0 * fade) as u8)),
         );
     }
-    theme::glass_surface(painter, r, radius, (if selected { 0.96 } else { 0.86 }) * fade);
     if let Some(t) = tint {
         // the scene's colour as a breath through the glass
         theme::fill_grad_poly(

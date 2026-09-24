@@ -1,6 +1,6 @@
 //! Themes, tokens and the painting primitives the whole app is drawn with.
 //!
-//! This is the Starforge design system, shared with Tesseract value for value,
+//! This is the design system, shared with Tesseract value for value,
 //! so the two apps sit side by side on a desktop as one family. Two surface
 //! families, and which one a thing gets is the whole visual idea:
 //!
@@ -14,7 +14,7 @@
 //! (the app's accent) and a *secondary* (the gradient the scene stars and their
 //! glow are built from).
 
-// The Starforge kit is kept whole and in step with Tesseract's copy: a
+// The shared kit is kept whole and in step with Tesseract's copy: a
 // primitive with no caller in Northstar today is still part of the language.
 #![allow(dead_code)]
 
@@ -37,15 +37,19 @@ pub enum ThemeId {
     Frostbite,
     Bloodmoon,
     Void,
+    /// Northstar's own addition: orange into magenta into violet, on
+    /// JetBrains' near-black.
+    JetBrains,
 }
 
 impl ThemeId {
-    pub const ALL: [ThemeId; 5] = [
+    pub const ALL: [ThemeId; 6] = [
         ThemeId::Zen,
         ThemeId::Ember,
         ThemeId::Frostbite,
         ThemeId::Bloodmoon,
         ThemeId::Void,
+        ThemeId::JetBrains,
     ];
 
     pub fn name(self) -> &'static str {
@@ -55,6 +59,7 @@ impl ThemeId {
             ThemeId::Frostbite => "Frostbite",
             ThemeId::Bloodmoon => "Bloodmoon",
             ThemeId::Void => "Void",
+            ThemeId::JetBrains => "JetBrains",
         }
     }
 
@@ -65,6 +70,7 @@ impl ThemeId {
             ThemeId::Frostbite => "Winter light, ice blue",
             ThemeId::Bloodmoon => "Deep crimson",
             ThemeId::Void => "Violet dark",
+            ThemeId::JetBrains => "Orange, magenta, violet",
         }
     }
 
@@ -75,6 +81,7 @@ impl ThemeId {
             ThemeId::Frostbite => "frostbite",
             ThemeId::Bloodmoon => "bloodmoon",
             ThemeId::Void => "void",
+            ThemeId::JetBrains => "jetbrains",
         }
     }
 
@@ -566,6 +573,94 @@ pub fn palette(id: ThemeId, dark: bool) -> Palette {
                 c(0x1E, 0x8A, 0x6E),
                 c(0xC0, 0x2E, 0x3A),
                 c(0xA8, 0x7C, 0x14),
+            ],
+        },
+
+        // ------------------------------------------------------- JetBrains --
+        // Taken from the JetBrains artwork: a near-black ground, and arches
+        // that run from marigold through pink and magenta into deep violet.
+        // The secondary — the energy colour the stars are made of — is the
+        // warm end of that run; the primary is its magenta heart.
+        (ThemeId::JetBrains, true) => Palette {
+            id,
+            dark,
+            backdrop: c(0x0D, 0x0C, 0x10),
+            glass: c(0x17, 0x16, 0x1A),
+            glass_hi: c(0x20, 0x1E, 0x25),
+            glass_line: c(0x33, 0x2C, 0x3C),
+            glass_edge: c(0x62, 0x4C, 0x74),
+            solid: c(0x15, 0x14, 0x18),
+            solid_hi: c(0x1D, 0x1B, 0x21),
+            sunken: c(0x0F, 0x0E, 0x12),
+            raised: c(0x24, 0x21, 0x2A),
+            line: c(0x2A, 0x26, 0x30),
+            line_strong: c(0x43, 0x3A, 0x4D),
+            text: c(0xEE, 0xEC, 0xF1),
+            text_dim: c(0xA9, 0xA3, 0xB3),
+            text_faint: c(0x71, 0x6B, 0x7B),
+            ink: c(0xFF, 0xFF, 0xFF),
+            primary: c(0xC8, 0x3C, 0xDB),
+            primary_light: c(0xE3, 0x86, 0xF0),
+            primary_deep: c(0x4E, 0x12, 0x78),
+            primary_quiet: c(0x1D, 0x10, 0x25),
+            primary_quiet_hi: c(0x2A, 0x15, 0x37),
+            prim_grad: (c(0x3A, 0x0C, 0xA3), c(0xC2, 0x00, 0xC8)),
+            sec: c(0xF8, 0x8A, 0x3A),
+            sec_light: c(0xFD, 0xC0, 0x45),
+            sec_deep: c(0xA8, 0x2E, 0x6A),
+            sec_grad: (c(0xE0, 0x33, 0x9B), c(0xFD, 0xB7, 0x2B)),
+            danger: c(0xFF, 0x4F, 0x5E),
+            danger_light: c(0xFF, 0x82, 0x8B),
+            warn: c(0xFD, 0xB3, 0x2A),
+            ok: c(0x3D, 0xD6, 0x95),
+            groups: [
+                c(0xD1, 0x4B, 0xE0),
+                c(0xFD, 0xB3, 0x2A),
+                c(0x7E, 0x6B, 0xFF),
+                c(0xF0, 0x5C, 0xA8),
+                c(0x3D, 0xC5, 0xE0),
+                c(0x3D, 0xD6, 0x95),
+            ],
+        },
+        (ThemeId::JetBrains, false) => Palette {
+            id,
+            dark,
+            backdrop: c(0xE4, 0xE1, 0xEA),
+            glass: c(0xFC, 0xFB, 0xFE),
+            glass_hi: c(0xFF, 0xFF, 0xFF),
+            glass_line: c(0xDA, 0xD3, 0xE4),
+            glass_edge: c(0xFF, 0xFF, 0xFF),
+            solid: c(0xFF, 0xFF, 0xFF),
+            solid_hi: c(0xF6, 0xF3, 0xF9),
+            sunken: c(0xEB, 0xE7, 0xF1),
+            raised: c(0xFA, 0xF8, 0xFD),
+            line: c(0xE2, 0xDC, 0xEA),
+            line_strong: c(0xBF, 0xB4, 0xCD),
+            text: c(0x17, 0x13, 0x1F),
+            text_dim: c(0x4C, 0x44, 0x58),
+            text_faint: c(0x7D, 0x75, 0x89),
+            ink: c(0xFF, 0xFF, 0xFF),
+            primary: c(0x9A, 0x10, 0xA8),
+            primary_light: c(0xB6, 0x3A, 0xC6),
+            primary_deep: c(0x4A, 0x0A, 0x6E),
+            primary_quiet: c(0xF6, 0xE7, 0xF8),
+            primary_quiet_hi: c(0xEE, 0xD5, 0xF2),
+            prim_grad: (c(0x3A, 0x0C, 0xA3), c(0xB0, 0x10, 0xB8)),
+            sec: c(0xE0, 0x6E, 0x10),
+            sec_light: c(0xF2, 0x98, 0x1C),
+            sec_deep: c(0x9A, 0x22, 0x5C),
+            sec_grad: (c(0xD0, 0x28, 0x86), c(0xF5, 0xA2, 0x1A)),
+            danger: c(0xC4, 0x28, 0x3A),
+            danger_light: c(0xE0, 0x50, 0x5E),
+            warn: c(0xB0, 0x7A, 0x0E),
+            ok: c(0x17, 0x8A, 0x5E),
+            groups: [
+                c(0x9A, 0x10, 0xA8),
+                c(0xC2, 0x7A, 0x0A),
+                c(0x5A, 0x2B, 0xD0),
+                c(0xC0, 0x28, 0x7A),
+                c(0x1E, 0x8F, 0xA8),
+                c(0x17, 0x8A, 0x5E),
             ],
         },
     }
@@ -1294,22 +1389,75 @@ pub fn apply(ctx: &egui::Context) {
 
 /// The accent an element wears in the gutter tag and the element bar. Taken
 /// from the theme, never fixed, so every element follows the palette.
+///
+/// Seven elements, seven hues a theme already owns: the scene heading takes
+/// the energy colour, a cue the accent, and the rest are spread across the
+/// theme's group tints so no two elements that sit next to each other on a
+/// page share a colour. Action — most of any script — stays neutral.
 pub fn element_color(e: Element) -> Color32 {
     let p = pal();
     match e {
         Element::SceneHeading => p.sec_light,
-        Element::Shot => theme_mix_sec(),
+        Element::Action => p.text_faint,
         Element::Character => p.primary_light,
-        Element::Parenthetical => p.text_faint,
-        Element::Dialogue => p.text_dim,
-        Element::Transition => p.group(2),
-        Element::Action => p.text_dim,
+        Element::Parenthetical => p.group(3),
+        Element::Dialogue => p.group(2),
+        Element::Transition => p.group(4),
+        Element::Shot => p.group(5),
     }
 }
 
-fn theme_mix_sec() -> Color32 {
+/// The band behind a block in the editor, that tells one element from the
+/// next at a glance. Faint enough to read through, never on the printed page.
+pub fn element_band(e: Element) -> Color32 {
     let p = pal();
-    mix(p.sec, p.sec_light, 0.5)
+    let a = match (e, p.dark) {
+        (Element::Action, true) => 6,
+        (Element::Action, false) => 9,
+        (_, true) => 11,
+        (_, false) => 16,
+    };
+    wash(element_color(e), a)
+}
+
+/// A colour of its own for each speaking character, in order of first
+/// appearance — a golden-ratio walk round the hue circle, so neighbours are
+/// far apart and a new character never repaints the ones before it. `seed`
+/// turns the whole wheel, for Settings' Shuffle.
+pub fn character_colors(names: &[String], seed: u32) -> std::collections::HashMap<String, Color32> {
+    let p = pal();
+    let start = (seed as f32 * 0.137_5).fract();
+    names
+        .iter()
+        .enumerate()
+        .map(|(k, n)| {
+            let h = (start + k as f32 * 0.618_034).fract();
+            let (s, l) = if p.dark { (0.62, 0.72) } else { (0.66, 0.36) };
+            (n.clone(), hsl(h, s, l))
+        })
+        .collect()
+}
+
+/// Hue, saturation, lightness, all 0..1, to a colour.
+pub fn hsl(h: f32, s: f32, l: f32) -> Color32 {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = (h.fract() + 1.0).fract() * 6.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c * 0.5;
+    let to = |v: f32| ((v + m).clamp(0.0, 1.0) * 255.0).round() as u8;
+    c3(to(r), to(g), to(b))
+}
+
+fn c3(r: u8, g: u8, b: u8) -> Color32 {
+    Color32::from_rgb(r, g, b)
 }
 
 /// The ink an element's text is set in on the page. Bodies sit a step down
