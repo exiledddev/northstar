@@ -398,9 +398,9 @@ impl<A> Deck<A> {
                 ui.set_width(rect.width());
                 let painter = ui.painter();
 
-                if eased > 0.01 {
-                    theme::glow_rect(painter, rect, radius, accent, 20.0, 0.22 * eased);
-                }
+                // a card held above the window casts a soft, layered shadow;
+                // its tone shows as a breath through the glass, not a halo
+                theme::lift_shadow(painter, rect, radius, eased.clamp(0.0, 1.0));
                 theme::glass_surface(painter, rect, radius, 0.94);
                 // the tone shows as a breath of colour through the glass
                 theme::fill_grad_poly(
@@ -562,11 +562,8 @@ fn pill_button(ui: &mut egui::Ui, label: &str, tint: Color32, filled: bool) -> b
     );
     let size = Vec2::new(galley.rect.width() + 28.0, 28.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.13) > 0.45;
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER) > 0.45;
     if filled {
-        if hot {
-            theme::glow_rect(ui.painter(), rect, theme::R_PILL, tint, 14.0, 0.35);
-        }
         theme::grad_rect(
             ui.painter(),
             rect,
