@@ -1527,12 +1527,17 @@ checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "northstar"
-version = "0.1.0"
+version = "2.0.0"
 dependencies = [
  "chrono",
  "dirs",
  "eframe",
  "printpdf",
+ "raw-window-handle",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols-plasma",
+ "x11rb",
 ]
 
 [[package]]

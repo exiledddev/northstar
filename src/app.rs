@@ -1,31 +1,116 @@
-//! The application shell around the page.
+//! The shell around the page.
+//!
+//! Islands on a blurred backdrop, exactly as Tesseract lays them out: the
+//! title bar and ribbon float on the glass, and the library rail, the script
+//! page and the scene navigator are solid panes with a gap of backdrop between
+//! them. Everything the user can destroy is asked about first, and everything
+//! says so afterwards through the deck at the bottom of the window.
 
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime};
 
-use eframe::egui::{self, Align, Key, KeyboardShortcut, Layout, Modifiers, Sense, Stroke};
+use eframe::egui::{self, Align, Color32, Layout, Pos2, Rect, Sense, Stroke, Vec2};
 
+use crate::alerts::{self, Tone};
+use crate::anim;
+use crate::blur;
+use crate::caret;
+use crate::cards::{self, CardsState};
+use crate::chrome;
 use crate::editor::{self, Caret, EditorState};
 use crate::export::{self, Format};
-use crate::model::{Document, Element};
+use crate::icons::{self, Icon};
+use crate::logo;
+use crate::model::{eighths_label, CastMember, Document, Element};
+use crate::pages::{self, PagesState};
+use crate::settings::{AfterExport, BlurMode, Settings, SortBy};
+use crate::splash::Splash;
 use crate::storage::{self, Entry};
-use crate::theme;
+use crate::theme::{self, pal};
+use crate::ui;
 
-const AUTOSAVE_IDLE: Duration = Duration::from_millis(1200);
 const SNAPSHOT_IDLE: Duration = Duration::from_millis(700);
-const STATUS_TTL: Duration = Duration::from_secs(5);
 
-#[derive(Clone)]
-struct Snapshot {
-    blocks: Vec<crate::model::Block>,
-    title: String,
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Write,
+    Cards,
+    Pages,
 }
 
-#[derive(Default, Clone, Copy)]
-struct Stats {
+impl Mode {
+    fn index(self) -> usize {
+        match self {
+            Mode::Write => 0,
+            Mode::Cards => 1,
+            Mode::Pages => 2,
+        }
+    }
+    fn from_index(i: usize) -> Mode {
+        match i {
+            1 => Mode::Cards,
+            2 => Mode::Pages,
+            _ => Mode::Write,
+        }
+    }
+}
+
+/// Everything the app will only do once you have said yes.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Ask {
+    DeleteScript(PathBuf),
+    DeleteScene(usize),
+    RenameScript,
+    RestoreSnapshot(PathBuf),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Popover {
+    Menu,
+    Settings,
+    TitlePage,
+    Snapshots,
+    Elements,
+}
+
+/// What the printed layout says about the script, worked out once whenever it
+/// changes rather than every frame.
+#[derive(Default)]
+struct Layout2 {
+    /// Block id → the page that starts there.
+    page_starts: HashMap<u64, usize>,
+    /// Heading id → (page it starts on, length in eighths).
+    lengths: HashMap<u64, (usize, usize)>,
     pages: usize,
     words: usize,
     scenes: usize,
+    cast: Vec<CastMember>,
+    dialogue: f32,
+}
+
+#[derive(Default)]
+struct Rail {
+    /// Where each row was last drawn, so a deleted one can be seen to go.
+    last_rects: HashMap<PathBuf, Rect>,
+    /// A script on its way out: what it said, where it was, and when it went.
+    ghost: Option<(String, Rect, Instant)>,
+    starred_collapsed: bool,
+    all_collapsed: bool,
+    /// A row's right-click menu: which script, where, and the frame it opened.
+    menu: Option<(PathBuf, Pos2, u64)>,
+}
+
+#[derive(Default)]
+struct Find {
+    open: bool,
+    needle: String,
+    with: String,
+    /// Which match is current, as an index into this frame's matches.
+    current: usize,
+    focus: bool,
+    rect: Option<Rect>,
 }
 
 pub struct App {
@@ -33,34 +118,97 @@ pub struct App {
     path: Option<PathBuf>,
     entries: Vec<Entry>,
     ed: EditorState,
+    cards: CardsState,
+    pages: PagesState,
+    mode: Mode,
 
     search: String,
-    show_library: bool,
-    show_details: bool,
+    focus_search: bool,
+    focus_title: bool,
+    focus_mode: bool,
+
+    settings: Settings,
+    theme_dirty: bool,
+    blur: blur::Blur,
+    /// When Tesseract's settings were last seen to change, and when we looked.
+    tess_seen: Option<SystemTime>,
+    tess_checked: Option<Instant>,
 
     dirty: bool,
     last_change: Option<Instant>,
     saved_at: Option<Instant>,
 
-    undo: Vec<Snapshot>,
-    redo: Vec<Snapshot>,
-    baseline: Snapshot,
+    undo: Vec<Document>,
+    redo: Vec<Document>,
+    baseline: Document,
     snapshot_due: bool,
 
-    stats: Stats,
-    stats_at: Option<Instant>,
-    stats_stale: bool,
+    layout: Layout2,
+    layout_at: Option<Instant>,
+    layout_stale: bool,
+    session_words: i64,
+    words_seen: Option<(PathBuf, usize)>,
+    /// Which of each character's cues was jumped to last.
+    cast_cursor: HashMap<String, usize>,
 
-    status: Option<(String, bool, Instant)>,
-    confirm_delete: Option<PathBuf>,
-    mono_font: Option<String>,
+    deck: alerts::Deck<Ask>,
+    popover: Option<Popover>,
+    popover_frame: u64,
+    menu_button_rect: Rect,
+    settings_button_rect: Rect,
+    title_chip_rect: Rect,
+    element_button_rect: Rect,
+    menu_item_rects: Vec<Rect>,
+    page_rect: Rect,
+
+    rail: Rail,
+    find: Find,
+
+    frame_no: u64,
+    page_key: String,
+    page_born: Instant,
+    splash: Option<Splash>,
+    importing: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
+    /// The scripts folder's own modification time, so a script dropped in
+    /// from outside shows up in the library without waiting for a save.
+    library_seen: Option<(SystemTime, Instant)>,
+    /// Files named on the command line — "Open with Northstar" — handled on
+    /// the first frame.
+    pub arrivals: Vec<PathBuf>,
 }
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        theme::apply(&cc.egui_ctx);
-        let mono_font = theme::install_fonts(&cc.egui_ctx);
+        let mut app = App::with_context(&cc.egui_ctx);
+        app.blur = blur::Blur::install(cc);
+        // Worth one line on stderr: when the islands look wrong, this is why.
+        eprintln!(
+            "northstar: {} — window blur {}",
+            blur::session_name(),
+            app.blur.state.describe()
+        );
+        app.sync_glass();
+        app
+    }
+
+    /// The real constructor; the headless UI tests build an App from here.
+    pub fn with_context(ctx: &egui::Context) -> Self {
         let _ = storage::ensure_dirs();
+
+        let mut settings = storage::read_settings();
+        let mut tess_seen = None;
+        if settings.match_tesseract {
+            if let Some((t, when)) = storage::read_tesseract_settings() {
+                settings.adopt_look(&t);
+                tess_seen = Some(when);
+            }
+        }
+        theme::set_palette(settings.theme, !settings.light_mode);
+        theme::set_glass_opacity(settings.glass_opacity);
+        anim::set_enabled(settings.animations);
+        theme::apply(ctx);
+        theme::install_fonts(ctx);
+        ctx.set_zoom_factor(settings.font_scale);
 
         let entries = storage::list_scripts();
         let (doc, path) = match entries.first() {
@@ -71,32 +219,62 @@ impl App {
             None => (starter_document(), None),
         };
 
-        let baseline = Snapshot {
-            blocks: doc.blocks.clone(),
-            title: doc.meta.title.clone(),
+        let splash = if settings.splash {
+            Some(Splash::default())
+        } else {
+            None
         };
+        let mut ed = EditorState::default();
+        ed.font_px = settings.page_px;
 
-        let mut app = Self {
+        let mut app = App {
+            baseline: doc.clone(),
             doc,
             path,
             entries,
-            ed: EditorState::default(),
+            ed,
+            cards: CardsState::default(),
+            pages: PagesState::default(),
+            mode: Mode::Write,
             search: String::new(),
-            show_library: true,
-            show_details: false,
+            focus_search: false,
+            focus_title: false,
+            focus_mode: false,
+            settings,
+            theme_dirty: false,
+            blur: blur::Blur::default(),
+            tess_seen,
+            tess_checked: None,
             dirty: false,
             last_change: None,
             saved_at: None,
             undo: Vec::new(),
             redo: Vec::new(),
-            baseline,
             snapshot_due: false,
-            stats: Stats::default(),
-            stats_at: None,
-            stats_stale: true,
-            status: None,
-            confirm_delete: None,
-            mono_font,
+            layout: Layout2::default(),
+            layout_at: None,
+            layout_stale: true,
+            session_words: 0,
+            words_seen: None,
+            cast_cursor: HashMap::new(),
+            deck: alerts::Deck::default(),
+            popover: None,
+            popover_frame: 0,
+            menu_button_rect: Rect::NOTHING,
+            settings_button_rect: Rect::NOTHING,
+            title_chip_rect: Rect::NOTHING,
+            element_button_rect: Rect::NOTHING,
+            menu_item_rects: Vec::new(),
+            page_rect: Rect::NOTHING,
+            rail: Rail::default(),
+            find: Find::default(),
+            frame_no: 0,
+            page_key: String::new(),
+            page_born: Instant::now(),
+            splash,
+            importing: None,
+            library_seen: None,
+            arrivals: Vec::new(),
         };
 
         if app.path.is_none() {
@@ -105,6 +283,10 @@ impl App {
             app.save(false);
             app.refresh_entries();
         }
+        // the caret starts where the script does, as it does on opening one
+        app.ed.focus_block = app.doc.blocks.first().map(|b| b.id);
+        app.ed.pending_focus = app.doc.blocks.first().map(|b| (b.id, Caret::End));
+        app.refresh_layout(true);
         app
     }
 
@@ -114,14 +296,11 @@ impl App {
         self.dirty = true;
         self.last_change = Some(Instant::now());
         self.snapshot_due = true;
-        self.stats_stale = true;
+        self.layout_stale = true;
     }
 
     fn snapshot_now(&mut self) {
-        let current = Snapshot {
-            blocks: self.doc.blocks.clone(),
-            title: self.doc.meta.title.clone(),
-        };
+        let current = self.doc.clone();
         self.undo.push(std::mem::replace(&mut self.baseline, current));
         if self.undo.len() > 200 {
             self.undo.remove(0);
@@ -130,42 +309,51 @@ impl App {
         self.snapshot_due = false;
     }
 
+    /// A checkpoint before a change made in one go (a scene moved, a replace).
+    fn checkpoint(&mut self) {
+        if self.snapshot_due {
+            self.snapshot_now();
+        }
+        self.undo.push(self.doc.clone());
+        if self.undo.len() > 200 {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+    }
+
+    fn after_history(&mut self) {
+        self.doc.ensure_not_empty();
+        self.doc.reseed_ids();
+        self.dirty = true;
+        self.last_change = Some(Instant::now());
+        self.layout_stale = true;
+        self.ed.fresh = true;
+    }
+
     fn undo(&mut self) {
         if self.snapshot_due {
             self.snapshot_now();
         }
-        if let Some(prev) = self.undo.pop() {
-            let current = Snapshot {
-                blocks: self.doc.blocks.clone(),
-                title: self.doc.meta.title.clone(),
-            };
-            self.redo.push(current);
-            self.doc.blocks = prev.blocks.clone();
-            self.doc.meta.title = prev.title.clone();
-            self.baseline = prev;
-            self.doc.ensure_not_empty();
-            self.doc.reseed_ids();
-            self.dirty = true;
-            self.last_change = Some(Instant::now());
-            self.stats_stale = true;
+        match self.undo.pop() {
+            Some(prev) => {
+                self.redo.push(self.doc.clone());
+                self.doc = prev.clone();
+                self.baseline = prev;
+                self.after_history();
+            }
+            None => self.deck.say("Nothing to undo", "", Tone::Info),
         }
     }
 
     fn redo(&mut self) {
-        if let Some(next) = self.redo.pop() {
-            let current = Snapshot {
-                blocks: self.doc.blocks.clone(),
-                title: self.doc.meta.title.clone(),
-            };
-            self.undo.push(current);
-            self.doc.blocks = next.blocks.clone();
-            self.doc.meta.title = next.title.clone();
-            self.baseline = next;
-            self.doc.ensure_not_empty();
-            self.doc.reseed_ids();
-            self.dirty = true;
-            self.last_change = Some(Instant::now());
-            self.stats_stale = true;
+        match self.redo.pop() {
+            Some(next) => {
+                self.undo.push(self.doc.clone());
+                self.doc = next.clone();
+                self.baseline = next;
+                self.after_history();
+            }
+            None => self.deck.say("Nothing to redo", "", Tone::Info),
         }
     }
 
@@ -192,6 +380,7 @@ impl App {
                 let new_path = storage::unique_path(&self.doc.meta.title, Some(&path));
                 if path.exists() {
                     if std::fs::rename(&path, &new_path).is_ok() {
+                        storage::follow_rename(&path, &new_path);
                         path = new_path;
                     }
                 } else {
@@ -207,7 +396,7 @@ impl App {
                 self.saved_at = Some(Instant::now());
                 self.refresh_entries();
             }
-            Err(e) => self.toast(format!("Could not save: {e}"), true),
+            Err(e) => self.deck.say("Could not save", &e.to_string(), Tone::Danger),
         }
     }
 
@@ -219,19 +408,22 @@ impl App {
             Ok(doc) => {
                 self.doc = doc;
                 self.path = Some(path);
-                self.baseline = Snapshot {
-                    blocks: self.doc.blocks.clone(),
-                    title: self.doc.meta.title.clone(),
-                };
+                self.baseline = self.doc.clone();
                 self.undo.clear();
                 self.redo.clear();
                 self.dirty = false;
                 self.snapshot_due = false;
-                self.stats_stale = true;
+                self.layout_stale = true;
+                self.words_seen = None;
+                self.find.current = 0;
+                self.ed.fresh = true;
                 self.ed.focus_block = self.doc.blocks.first().map(|b| b.id);
-                self.ed.pending_focus = self.doc.blocks.first().map(|b| (b.id, Caret::End));
+                if self.mode == Mode::Write {
+                    self.ed.pending_focus = self.doc.blocks.first().map(|b| (b.id, Caret::End));
+                }
+                self.refresh_layout(true);
             }
-            Err(e) => self.toast(format!("Could not open: {e}"), true),
+            Err(e) => self.deck.say("Could not open", &e.to_string(), Tone::Danger),
         }
     }
 
@@ -246,117 +438,2448 @@ impl App {
         self.path = Some(storage::unique_path("Untitled Script", None));
         self.undo.clear();
         self.redo.clear();
-        self.baseline = Snapshot {
-            blocks: self.doc.blocks.clone(),
-            title: self.doc.meta.title.clone(),
-        };
+        self.baseline = self.doc.clone();
         self.save(false);
         self.refresh_entries();
-        self.ed.pending_focus = self.doc.blocks.first().map(|b| (b.id, Caret::Start));
-        self.show_details = true;
+        self.ed.fresh = true;
+        self.words_seen = None;
+        self.mode = Mode::Write;
+        // name it first: the title is selected, ready to be typed over
+        self.focus_title = true;
+        self.refresh_layout(true);
+        self.deck.ok("Script created", "Name it, then press Enter to start writing.");
     }
 
-    fn duplicate(&mut self, path: &PathBuf) {
-        if let Ok(mut doc) = storage::load(path) {
-            doc.meta.title = format!("{} (copy)", doc.meta.title);
-            let new_path = storage::unique_path(&doc.meta.title, None);
-            if storage::save(&new_path, &doc).is_ok() {
-                self.refresh_entries();
-                self.toast("Duplicated".to_string(), false);
+    fn duplicate(&mut self, path: &Path) {
+        if self.path.as_deref() == Some(path) && self.dirty {
+            self.save(false);
+        }
+        match storage::load(path) {
+            Ok(mut doc) => {
+                doc.meta.title = format!("{} (copy)", doc.meta.title);
+                doc.meta.starred = false;
+                let new_path = storage::unique_path(&doc.meta.title, None);
+                match storage::save(&new_path, &doc) {
+                    Ok(()) => {
+                        self.refresh_entries();
+                        self.deck.ok("Duplicated", &doc.meta.title);
+                    }
+                    Err(e) => self.deck.say("Could not duplicate", &e.to_string(), Tone::Danger),
+                }
             }
+            Err(e) => self.deck.say("Could not duplicate", &e.to_string(), Tone::Danger),
         }
     }
 
-    fn delete(&mut self, path: &PathBuf) {
-        if storage::delete(path).is_ok() {
-            if self.path.as_deref() == Some(path.as_path()) {
-                self.path = None;
-                self.doc = Document::default();
-                self.dirty = false;
+    fn delete(&mut self, path: &Path) {
+        let title = self
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .map(|e| e.title.clone())
+            .unwrap_or_default();
+        // leave something behind to watch go
+        if let Some(r) = self.rail.last_rects.get(path).copied() {
+            self.rail.ghost = Some((title.clone(), r, Instant::now()));
+        }
+        match storage::delete(path) {
+            Ok(()) => {
+                if self.path.as_deref() == Some(path) {
+                    self.dirty = false;
+                    self.refresh_entries();
+                    match self.entries.first().map(|e| e.path.clone()) {
+                        Some(next) => self.open(next),
+                        None => {
+                            self.path = None;
+                            self.doc = starter_document();
+                            self.path = Some(storage::unique_path(&self.doc.meta.title, None));
+                            self.save(false);
+                            self.ed.fresh = true;
+                        }
+                    }
+                }
+                self.refresh_entries();
+                self.deck.say("Script deleted", &title, Tone::Warn);
             }
-            self.refresh_entries();
-            self.toast("Deleted".to_string(), false);
+            Err(e) => self.deck.say("Could not delete", &e.to_string(), Tone::Danger),
+        }
+    }
+
+    fn toggle_star(&mut self, path: &Path) {
+        if self.path.as_deref() == Some(path) {
+            self.doc.meta.starred = !self.doc.meta.starred;
+            self.save(false);
+            return;
+        }
+        if let Ok(mut doc) = storage::load(path) {
+            doc.meta.starred = !doc.meta.starred;
+            if storage::save(path, &doc).is_ok() {
+                self.refresh_entries();
+            }
         }
     }
 
     fn refresh_entries(&mut self) {
         self.entries = storage::list_scripts();
+        if let Ok(m) = std::fs::metadata(storage::scripts_dir()).and_then(|m| m.modified()) {
+            self.library_seen = Some((m, Instant::now()));
+        }
     }
 
-    fn toast(&mut self, msg: String, error: bool) {
-        self.status = Some((msg, error, Instant::now()));
+    /// Look at the scripts folder now and then; if anything was added,
+    /// removed or renamed there from outside, list it again.
+    fn watch_library(&mut self) {
+        if let Some((_, at)) = self.library_seen {
+            if at.elapsed() < Duration::from_millis(1500) {
+                return;
+            }
+        }
+        let now = std::fs::metadata(storage::scripts_dir()).and_then(|m| m.modified()).ok();
+        match (now, self.library_seen) {
+            (Some(m), Some((seen, _))) if m == seen => {
+                self.library_seen = Some((m, Instant::now()));
+            }
+            _ => self.refresh_entries(),
+        }
     }
 
-    fn do_export(&mut self, format: Format) {
+    /// Work the printed layout out again, if anything has changed since.
+    fn refresh_layout(&mut self, now: bool) {
+        let stale_enough = self
+            .layout_at
+            .map(|t| t.elapsed() > Duration::from_millis(350))
+            .unwrap_or(true);
+        if !(self.layout_stale && (stale_enough || now)) {
+            return;
+        }
+        let starts = export::page_starts(&self.doc);
+        let lengths = export::scene_lengths(&self.doc);
+        self.layout = Layout2 {
+            page_starts: starts.into_iter().map(|(n, id)| (id, n)).collect(),
+            pages: export::page_count(&self.doc),
+            lengths: lengths.into_iter().map(|(id, pg, e)| (id, (pg, e))).collect(),
+            words: self.doc.word_count(),
+            scenes: self.doc.scene_count(),
+            cast: self.doc.cast(),
+            dialogue: self.doc.dialogue_share(),
+        };
+        // the session counts what was written, in whichever script
+        if let Some(path) = self.path.clone() {
+            match &self.words_seen {
+                Some((p, before)) if *p == path => {
+                    self.session_words += self.layout.words as i64 - *before as i64;
+                }
+                _ => {}
+            }
+            self.words_seen = Some((path, self.layout.words));
+        }
+        self.layout_at = Some(Instant::now());
+        self.layout_stale = false;
+    }
+
+    fn export(&mut self, format: Format, quick: bool) {
         self.doc.normalize();
-        match export::export(&self.doc, format) {
+        match export::export_with(&self.doc, format, self.settings.scene_numbers) {
             Ok(p) => {
                 let name = p
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("file")
                     .to_string();
-                self.toast(format!("Exported {name} to the exports folder"), false);
-                if format == Format::Pdf {
-                    storage::open_with_desktop(&p);
+                if format == Format::Pdf && quick {
+                    match self.settings.after_export {
+                        AfterExport::Open => storage::open_with_desktop(&p),
+                        AfterExport::Reveal => storage::reveal_in_file_manager(&p),
+                        AfterExport::Nothing => {}
+                    }
+                }
+                self.deck.ok("Exported", &name);
+            }
+            Err(e) => self.deck.say("Export failed", &e, Tone::Danger),
+        }
+    }
+
+    fn import_path(&mut self, path: &Path) {
+        match storage::import_file(path) {
+            Ok(doc) => {
+                if self.dirty {
+                    self.save(false);
+                }
+                let new_path = storage::unique_path(&doc.meta.title, None);
+                match storage::save(&new_path, &doc) {
+                    Ok(()) => {
+                        self.refresh_entries();
+                        let title = doc.meta.title.clone();
+                        self.open(new_path);
+                        self.mode = Mode::Write;
+                        self.deck.ok(
+                            "Imported",
+                            &format!("{title} — {} scenes", self.layout.scenes),
+                        );
+                    }
+                    Err(e) => self.deck.say("Could not import", &e.to_string(), Tone::Danger),
                 }
             }
-            Err(e) => self.toast(format!("Export failed: {e}"), true),
+            Err(e) => self.deck.say("Could not import", &e, Tone::Danger),
         }
     }
 
-    fn refresh_stats(&mut self) {
-        let stale_enough = self
-            .stats_at
-            .map(|t| t.elapsed() > Duration::from_millis(350))
-            .unwrap_or(true);
-        if self.stats_stale && stale_enough {
-            self.stats = Stats {
-                pages: export::page_count(&self.doc),
-                words: self.doc.word_count(),
-                scenes: self.doc.scene_count(),
+    fn start_import(&mut self) {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(storage::pick_file_to_import());
+        });
+        self.importing = Some(rx);
+    }
+
+    fn take_snapshot(&mut self) {
+        let Some(path) = self.path.clone() else { return };
+        self.doc.normalize();
+        match storage::take_snapshot(&path, &self.doc) {
+            Ok(_) => self.deck.ok("Snapshot taken", "Find it under More → Snapshots."),
+            Err(e) => self.deck.say("Could not take a snapshot", &e.to_string(), Tone::Danger),
+        }
+    }
+
+    fn restore_snapshot(&mut self, snap: &Path) {
+        let Some(path) = self.path.clone() else { return };
+        match storage::load(snap) {
+            Ok(old) => {
+                // what is there now is kept first, so a restore loses nothing
+                self.doc.normalize();
+                let _ = storage::take_snapshot(&path, &self.doc);
+                self.checkpoint();
+                let title = self.doc.meta.title.clone();
+                self.doc = old;
+                self.doc.meta.title = title;
+                self.after_history();
+                self.save(false);
+                self.refresh_layout(true);
+                self.deck.ok("Snapshot restored", "The version before it was kept too.");
+            }
+            Err(e) => self.deck.say("Could not restore", &e.to_string(), Tone::Danger),
+        }
+    }
+
+    /// A new scene heading straight after the scene the caret is in.
+    fn new_scene(&mut self) {
+        self.checkpoint();
+        let at = self
+            .ed
+            .focus_block
+            .and_then(|id| self.doc.scene_of(id))
+            .and_then(|k| self.doc.scenes().get(k).map(|s| s.end))
+            .unwrap_or(self.doc.blocks.len());
+        let b = self.doc.new_block(Element::SceneHeading, "");
+        let id = b.id;
+        self.doc.blocks.insert(at, b);
+        self.mode = Mode::Write;
+        self.ed.focus(id, Caret::Start);
+        self.ed.scroll_to_focus = true;
+        self.mark_changed();
+        self.snapshot_due = false;
+        self.baseline = self.doc.clone();
+    }
+
+    fn sync_glass(&mut self) {
+        // If the compositor could not blur, translucency would show the desktop
+        // rather than a soft version of it, so the glass goes nearly solid.
+        let want = match self.settings.blur {
+            BlurMode::Off => 1.0,
+            BlurMode::Always => self.settings.glass_opacity,
+            BlurMode::Auto => {
+                if self.blur.state.is_on() {
+                    self.settings.glass_opacity
+                } else {
+                    0.97
+                }
+            }
+        };
+        theme::set_glass_opacity(want);
+    }
+
+    /// What is behind the islands: the backdrop, at whatever alpha the window
+    /// is being painted with.
+    fn window_ground(&self) -> Color32 {
+        let p = pal();
+        if !self.transparent_window() {
+            return p.backdrop;
+        }
+        // On a light page the desk has to stay a shade darker than the cards
+        // laid on it, so the glass is denser there than it is on a dark one.
+        let g = theme::glass_opacity();
+        let a = if p.dark { g * 235.0 } else { (0.78 + 0.22 * g) * 252.0 };
+        theme::wash(p.backdrop, a as u8)
+    }
+
+    fn transparent_window(&self) -> bool {
+        match self.settings.blur {
+            BlurMode::Off => false,
+            BlurMode::Always => true,
+            BlurMode::Auto => self.blur.state.is_on(),
+        }
+    }
+
+    fn save_settings(&mut self) {
+        if let Err(e) = storage::write_settings(&self.settings) {
+            self.deck
+                .say("Could not save settings", &e.to_string(), Tone::Danger);
+        }
+    }
+
+    /// Follow Tesseract's look, when asked to, whenever its settings change.
+    fn follow_tesseract(&mut self) {
+        if !self.settings.match_tesseract {
+            return;
+        }
+        if self
+            .tess_checked
+            .map(|t| t.elapsed() < Duration::from_millis(1500))
+            .unwrap_or(false)
+        {
+            return;
+        }
+        self.tess_checked = Some(Instant::now());
+        if let Some((t, when)) = storage::read_tesseract_settings() {
+            if self.tess_seen != Some(when) {
+                self.tess_seen = Some(when);
+                if self.settings.adopt_look(&t) {
+                    self.theme_dirty = true;
+                }
+            }
+        }
+    }
+
+    fn answer(&mut self, a: alerts::Answer<Ask>) {
+        match a.action {
+            Ask::DeleteScript(path) => self.delete(&path),
+            Ask::DeleteScene(n) => {
+                let heading = self
+                    .doc
+                    .scenes()
+                    .get(n)
+                    .map(|s| s.heading.clone())
+                    .unwrap_or_default();
+                self.checkpoint();
+                if self.doc.remove_scene(n) {
+                    self.mark_changed();
+                    self.snapshot_due = false;
+                    self.baseline = self.doc.clone();
+                    self.deck.say("Scene deleted", &format!("{heading} · Ctrl+Z brings it back"), Tone::Warn);
+                }
+            }
+            Ask::RenameScript => {
+                if let Some(t) = a.text {
+                    if !t.trim().is_empty() {
+                        self.doc.meta.title = t.trim().to_string();
+                        self.mark_changed();
+                        self.save(true);
+                        self.deck.ok("Renamed", t.trim());
+                    }
+                }
+            }
+            Ask::RestoreSnapshot(p) => self.restore_snapshot(&p),
+        }
+    }
+
+    fn ask_delete(&mut self, path: PathBuf) {
+        let title = self
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .map(|e| e.title.clone())
+            .unwrap_or_else(|| "this script".into());
+        self.deck.ask(
+            "Delete this script?",
+            &format!("“{title}” goes for good. Its snapshots stay in the library folder."),
+            "Delete",
+            Tone::Danger,
+            Ask::DeleteScript(path),
+        );
+    }
+
+    fn ask_delete_scene(&mut self, n: usize) {
+        let heading = self.doc.scenes().get(n).map(|s| s.heading.clone()).unwrap_or_default();
+        self.deck.ask(
+            "Delete this scene?",
+            &format!(
+                "“{}” and everything in it. Ctrl+Z brings it back.",
+                if heading.trim().is_empty() { "Untitled scene" } else { heading.trim() }
+            ),
+            "Delete",
+            Tone::Danger,
+            Ask::DeleteScene(n),
+        );
+    }
+
+    fn ask_restore(&mut self, s: &storage::Snapshot) {
+        self.deck.ask(
+            "Restore this snapshot?",
+            &format!(
+                "The script as it was at {}. What is there now is kept as a snapshot first, so nothing is lost.",
+                s.when
+            ),
+            "Restore",
+            Tone::Warn,
+            Ask::RestoreSnapshot(s.path.clone()),
+        );
+    }
+
+    fn toggle_popover(&mut self, which: Popover) {
+        if self.popover == Some(which) {
+            self.popover = None;
+        } else {
+            self.popover = Some(which);
+            self.popover_frame = self.frame_no;
+        }
+    }
+
+    fn close_popover_if_outside(&mut self, ctx: &egui::Context, areas: &[Rect]) {
+        let d = ui::Dismisser {
+            opened_on: self.popover_frame,
+        };
+        if d.should_close(ctx, self.frame_no, areas) {
+            self.popover = None;
+        }
+    }
+
+    fn title_or_untitled(&self) -> String {
+        if self.doc.meta.title.trim().is_empty() {
+            "Untitled Script".to_string()
+        } else {
+            self.doc.meta.title.clone()
+        }
+    }
+
+    // ---------- the ribbon ----------
+
+    fn top_panel(&mut self, ctx: &egui::Context) {
+        egui::TopBottomPanel::top("ns-ribbon")
+            .exact_height(theme::TOPBAR_H)
+            .frame(egui::Frame::none().inner_margin(egui::Margin {
+                left: theme::GAP,
+                right: theme::GAP,
+                top: 5.0,
+                bottom: 0.0,
+            }))
+            .show_separator_line(false)
+            .show(ctx, |ui| {
+                chrome::title_bar(ui, ctx);
+                ui.add_space(6.0);
+                self.ribbon_row(ui);
+            });
+    }
+
+    /// The ribbon sits straight on the window's glass — no plates, no boxes.
+    /// A control is only visible once you reach for it.
+    fn ribbon_row(&mut self, ui: &mut egui::Ui) {
+        let p = pal();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 8.0;
+
+            if let Some(picked) = ui::segmented(
+                ui,
+                &[
+                    ("Write", Icon::Pencil),
+                    ("Cards", Icon::Grid),
+                    ("Pages", Icon::File),
+                ],
+                self.mode.index(),
+            ) {
+                self.mode = Mode::from_index(picked);
+            }
+
+            ui.add_space(6.0);
+            ui::rule(ui, 22.0);
+            ui.add_space(6.0);
+
+            // what is on the right is laid out first, so the tools know their room
+            let right_w = 214.0 + if self.saved_label().is_some() { 96.0 } else { 0.0 };
+            let room = (ui.available_width() - right_w).max(0.0);
+            let tools = Rect::from_min_size(ui.cursor().min, Vec2::new(room, 30.0));
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(tools)
+                    .layout(Layout::left_to_right(Align::Center)),
+            );
+            child.set_clip_rect(tools.expand2(Vec2::new(0.0, 20.0)).intersect(ui.clip_rect()));
+            match self.mode {
+                Mode::Write => self.write_tools(&mut child, room),
+                Mode::Cards => self.cards_tools(&mut child, room),
+                Mode::Pages => self.pages_tools(&mut child, room),
+            }
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+
+                let (rect, menu) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), Sense::click());
+                self.menu_button_rect = rect;
+                let open = matches!(self.popover, Some(Popover::Menu) | Some(Popover::Snapshots));
+                ui::ghost_slot(ui, rect, menu.hovered() || open, open);
+                icons::draw(
+                    ui.painter(),
+                    rect.shrink(9.0),
+                    Icon::More,
+                    if open { p.primary_light } else { p.text_dim },
+                );
+                if menu.on_hover_text("More actions").clicked() {
+                    self.toggle_popover(Popover::Menu);
+                }
+
+                let (srect, sresp) = ui.allocate_exact_size(Vec2::new(30.0, 30.0), Sense::click());
+                self.settings_button_rect = srect;
+                let sopen = self.popover == Some(Popover::Settings);
+                ui::ghost_slot(ui, srect, sresp.hovered() || sopen, sopen);
+                icons::draw(
+                    ui.painter(),
+                    srect.shrink(8.0),
+                    Icon::Settings,
+                    if sopen { p.primary_light } else { p.text_dim },
+                );
+                if sresp
+                    .on_hover_text(format!("Settings · {} · Ctrl+,", pal().id.name()))
+                    .clicked()
+                {
+                    self.toggle_popover(Popover::Settings);
+                }
+
+                ui.add_space(4.0);
+                ui::rule(ui, 20.0);
+                ui.add_space(4.0);
+
+                if ui::ribbon_button(ui, Icon::Eye, "", "Focus — just the scene you are in · Ctrl+.", self.focus_mode) {
+                    self.focus_mode = !self.focus_mode;
+                }
+                if ui::ribbon_button(ui, Icon::Users, "", "Cast", self.settings.show_cast) {
+                    self.settings.show_cast = !self.settings.show_cast;
+                    self.save_settings();
+                }
+                if ui::ribbon_button(ui, Icon::List, "", "Scenes · Ctrl+I", self.settings.show_scenes) {
+                    self.settings.show_scenes = !self.settings.show_scenes;
+                    self.save_settings();
+                }
+                if ui::ribbon_button(ui, Icon::Sidebar, "", "Library · Ctrl+B", self.settings.show_library) {
+                    self.settings.show_library = !self.settings.show_library;
+                    self.save_settings();
+                }
+
+                if let Some((text, col)) = self.saved_label() {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new(text)
+                            .font(theme::font_mono(theme::T_MICRO))
+                            .color(col),
+                    );
+                }
+            });
+        });
+    }
+
+    fn saved_label(&self) -> Option<(String, Color32)> {
+        let p = pal();
+        if self.dirty {
+            Some(("unsaved".to_string(), p.sec_light))
+        } else {
+            self.saved_at
+                .map(|t| (format!("saved {}", ago_instant(t)), p.text_faint))
+        }
+    }
+
+    fn stats_line(&self, ui: &mut egui::Ui, room: f32, with_scenes: bool) {
+        let p = pal();
+        let l = &self.layout;
+        let s = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let mut long = format!(
+            "{} · ~{} min · {} · {} words",
+            s(l.pages, "page", "pages"),
+            l.pages,
+            s(l.scenes, "scene", "scenes"),
+            l.words
+        );
+        if !with_scenes {
+            long = format!("{} · ~{} min", s(l.pages, "page", "pages"), l.pages);
+        }
+        let session = if self.session_words > 0 {
+            format!(" · +{} this session", self.session_words)
+        } else {
+            String::new()
+        };
+        let longer = format!("{long}{session}");
+        let mid = format!("{} pg · {} sc · {} w", l.pages, l.scenes, l.words);
+        let short = format!("{} pg", l.pages);
+        let goal = self.settings.session_goal;
+        let bar_w = if goal > 0 { 52.0 } else { 0.0 };
+        let text = ui::pick_that_fits(ui, &[&longer, &long, &mid, &short], room - bar_w - 8.0);
+        if !text.is_empty() {
+            ui.label(
+                egui::RichText::new(text)
+                    .font(theme::font_mono(theme::T_CAP))
+                    .color(p.text_faint),
+            );
+        }
+        if goal > 0 && room > bar_w + 20.0 {
+            // the session's goal as a thin track filling with the primary
+            let (rect, resp) = ui.allocate_exact_size(Vec2::new(46.0, 14.0), Sense::hover());
+            let t = (self.session_words.max(0) as f32 / goal as f32).clamp(0.0, 1.0);
+            let track = Rect::from_center_size(rect.center(), Vec2::new(46.0, 5.0));
+            ui.painter()
+                .rect_filled(track, egui::Rounding::same(3.0), theme::wash(p.text_faint, 55));
+            if t > 0.0 {
+                let fill = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * t, track.bottom()));
+                theme::grad_rect(ui.painter(), fill, 3.0, p.prim_grad.0, p.prim_grad.1, Vec2::new(1.0, 0.0));
+            }
+            if t >= 1.0 {
+                theme::glow_rect(ui.painter(), track, 2.5, p.sec, 10.0, 0.5);
+            }
+            resp.on_hover_text(format!(
+                "Session goal: {} of {goal} words",
+                self.session_words.max(0)
+            ));
+        }
+    }
+
+    fn write_tools(&mut self, ui: &mut egui::Ui, room: f32) {
+        let p = pal();
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let current = self.ed.current_element(&self.doc);
+        let wide = room > 400.0 + 110.0 + 120.0;
+        let mut wanted: Option<Element> = None;
+        if wide {
+            for e in Element::ALL {
+                if element_chip(ui, e, current == Some(e)) {
+                    wanted = Some(e);
+                }
+            }
+        } else {
+            let open = self.popover == Some(Popover::Elements);
+            let label = current.map(|e| e.label()).unwrap_or("Element");
+            let resp = ui::dropdown(ui, Icon::Pencil, label, open, 150.0);
+            self.element_button_rect = resp.rect;
+            if resp.on_hover_text("The element the caret is in · Tab cycles").clicked() {
+                self.toggle_popover(Popover::Elements);
+            }
+        }
+        if let Some(e) = wanted {
+            if editor::set_element(&mut self.doc, &mut self.ed, e) {
+                self.mark_changed();
+            }
+        }
+        ui.add_space(6.0);
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if ui::ribbon_button(
+            ui,
+            Icon::Print,
+            "Quick Export",
+            "Export this script as a PDF  ·  Ctrl+E",
+            false,
+        ) {
+            self.export(Format::Pdf, true);
+        }
+        let left = (room - (ui.min_rect().width())).max(0.0);
+        let _ = p;
+        self.stats_line(ui, left, true);
+    }
+
+    fn cards_tools(&mut self, ui: &mut egui::Ui, room: f32) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if ui::ribbon_button(ui, Icon::Plus, "New scene", "A new scene after the one you are in  ·  Ctrl+Enter", false) {
+            self.new_scene();
+            self.mode = Mode::Cards;
+        }
+        let left = (room - ui.min_rect().width()).max(0.0);
+        let text = ui::pick_that_fits(
+            ui,
+            &[
+                "·  drag a card to move its scene · right click for colour",
+                "·  drag to move · right click for more",
+                "·  right click for more",
+            ],
+            left - 170.0,
+        );
+        self.stats_line(ui, 170.0_f32.min(left), true);
+        if !text.is_empty() {
+            ui.label(
+                egui::RichText::new(text)
+                    .font(theme::font_mono(theme::T_CAP))
+                    .color(pal().text_faint),
+            );
+        }
+    }
+
+    fn pages_tools(&mut self, ui: &mut egui::Ui, room: f32) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if ui::ribbon_button(ui, Icon::Print, "Quick Export", "Export this script as a PDF  ·  Ctrl+E", false) {
+            self.export(Format::Pdf, true);
+        }
+        let left = (room - ui.min_rect().width()).max(0.0);
+        self.stats_line(ui, left.min(200.0), false);
+        let hint = ui::pick_that_fits(ui, &["·  click a line to go and write it", "·  click a line to edit"], left - 200.0);
+        if !hint.is_empty() {
+            ui.label(
+                egui::RichText::new(hint)
+                    .font(theme::font_mono(theme::T_CAP))
+                    .color(pal().text_faint),
+            );
+        }
+    }
+
+    // ---------- the library rail ----------
+
+    fn browser(&mut self, ctx: &egui::Context) {
+        if !self.settings.show_library || self.focus_mode {
+            return;
+        }
+        let p = pal();
+        egui::SidePanel::left("ns-rail")
+            .exact_width(theme::RAIL_W + theme::GAP)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::none().inner_margin(egui::Margin {
+                left: theme::GAP,
+                right: 0.0,
+                top: theme::GAP,
+                bottom: theme::GAP,
+            }))
+            .show(ctx, |ui| {
+                theme::island_frame(theme::R_ISLAND)
+                    .inner_margin(egui::Margin::symmetric(12.0, 14.0))
+                    .show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+
+                        // ---- make things ----
+                        ui.horizontal(|ui| {
+                            let w = ui.available_width() - 38.0;
+                            if new_script_button(ui, w) {
+                                self.new_script();
+                            }
+                            if ui::icon_button(ui, Icon::Upload, "Import Fountain, Final Draft or markdown  ·  or drop a file on the window", 32.0) {
+                                self.start_import();
+                            }
+                        });
+                        ui.add_space(9.0);
+
+                        // ---- filter ----
+                        let search = ui.add(
+                            egui::TextEdit::singleline(&mut self.search)
+                                .id(egui::Id::new("ns-search"))
+                                .desired_width(f32::INFINITY)
+                                .margin(egui::Margin::symmetric(10.0, 7.0))
+                                .hint_text("Filter scripts"),
+                        );
+                        if self.focus_search {
+                            search.request_focus();
+                            self.focus_search = false;
+                        }
+                        ui.add_space(9.0);
+
+                        let mut open: Option<PathBuf> = None;
+                        let mut ask: Option<PathBuf> = None;
+                        let mut star: Option<PathBuf> = None;
+                        let mut menu: Option<(PathBuf, Pos2)> = None;
+
+                        // room kept at the foot of the rail, so the maker's
+                        // name is on screen wherever you are in the app
+                        const FOOT: f32 = 26.0;
+                        let list_h = (ui.available_height() - FOOT).max(60.0);
+                        egui::ScrollArea::vertical()
+                            .id_salt("ns-rail-list")
+                            .auto_shrink([false; 2])
+                            .max_height(list_h)
+                            .show(ui, |ui| {
+                                self.rail_body(ui, &mut open, &mut ask, &mut star, &mut menu);
+                            });
+
+                        let (foot, _) =
+                            ui.allocate_exact_size(Vec2::new(ui.available_width(), FOOT), Sense::hover());
+                        theme::tracked_text(
+                            ui.painter(),
+                            Pos2::new(foot.left() + 3.0, foot.center().y + 3.0),
+                            "STARFORGE SOFTWARE",
+                            theme::font_semi(theme::T_MICRO - 0.5),
+                            theme::wash(p.text_faint, 150),
+                            1.4,
+                        );
+
+                        if let Some(path) = open {
+                            self.open(path);
+                        }
+                        if let Some(path) = star {
+                            self.toggle_star(&path);
+                        }
+                        if let Some(path) = ask {
+                            self.ask_delete(path);
+                        }
+                        if let Some((path, at)) = menu {
+                            self.rail.menu = Some((path, at, self.frame_no));
+                        }
+                    });
+            });
+    }
+
+    fn rail_body(
+        &mut self,
+        ui: &mut egui::Ui,
+        open: &mut Option<PathBuf>,
+        ask: &mut Option<PathBuf>,
+        star: &mut Option<PathBuf>,
+        menu: &mut Option<(PathBuf, Pos2)>,
+    ) {
+        let p = pal();
+        let needle = self.search.trim().to_lowercase();
+        let mut list: Vec<Entry> = self
+            .entries
+            .iter()
+            .filter(|e| {
+                needle.is_empty()
+                    || e.title.to_lowercase().contains(&needle)
+                    || e.preview.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect();
+        match self.settings.sort_by {
+            SortBy::Recent => list.sort_by(|a, b| b.modified.cmp(&a.modified)),
+            SortBy::Title => list.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            SortBy::Length => list.sort_by(|a, b| b.pages.cmp(&a.pages)),
+        }
+
+        let mut selected_row: Option<Rect> = None;
+        let mut seen_rects: HashMap<PathBuf, Rect> = HashMap::new();
+        let starred_first = self.settings.starred_first;
+        let (starred, rest): (Vec<Entry>, Vec<Entry>) = if starred_first {
+            list.into_iter().partition(|e| e.starred)
+        } else {
+            (Vec::new(), list)
+        };
+        let mut shown = 0usize;
+
+        for (label, icon, tint, items, is_starred) in [
+            ("Starred", Icon::StarFilled, Some(p.warn), &starred, true),
+            ("Scripts", Icon::File, None, &rest, false),
+        ] {
+            if items.is_empty() && (is_starred || shown > 0) {
+                continue;
+            }
+            let mut collapsed = if is_starred {
+                self.rail.starred_collapsed
+            } else {
+                self.rail.all_collapsed
             };
-            self.stats_at = Some(Instant::now());
-            self.stats_stale = false;
+            let head = section_header(ui, label, icon, items.len(), &mut collapsed, tint);
+            if head.clicked {
+                if is_starred {
+                    self.rail.starred_collapsed = collapsed;
+                } else {
+                    self.rail.all_collapsed = collapsed;
+                }
+            }
+            if !collapsed {
+                let branch = ui.painter().add(egui::Shape::Noop);
+                let mut kid_rects = Vec::new();
+                for e in items {
+                    shown += 1;
+                    let r = self.script_row(ui, e, open, ask, star, menu);
+                    seen_rects.insert(e.path.clone(), r);
+                    if self.path.as_deref() == Some(e.path.as_path()) {
+                        selected_row = Some(r);
+                    }
+                    kid_rects.push(r);
+                }
+                draw_branch(ui, branch, head.rect, &kid_rects, tint.unwrap_or(p.text_faint));
+            }
+            ui.add_space(8.0);
+        }
+
+        self.rail.last_rects = seen_rects;
+
+        // A deleted script is watched out rather than simply ceasing to be: the
+        // row it left behind lifts, narrows and burns off.
+        if let Some((title, rect, at)) = self.rail.ghost.clone() {
+            let t = (at.elapsed().as_secs_f32() / 0.5).clamp(0.0, 1.0);
+            if t >= 1.0 || !anim::enabled() {
+                self.rail.ghost = None;
+            } else {
+                let fade = 1.0 - anim::smootherstep(t);
+                let r = Rect::from_center_size(
+                    Pos2::new(rect.center().x, rect.center().y - 14.0 * (1.0 - fade)),
+                    Vec2::new(rect.width() * (0.7 + 0.3 * fade), rect.height() * fade.max(0.05)),
+                );
+                ui.painter().rect_filled(
+                    r,
+                    egui::Rounding::same(theme::R_MD),
+                    theme::wash(p.danger, (60.0 * fade) as u8),
+                );
+                ui.painter().text(
+                    Pos2::new(r.left() + 16.0, r.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    ui::elide(&title, 22),
+                    theme::font(theme::T_SM),
+                    theme::wash(p.danger_light, (200.0 * fade) as u8),
+                );
+                anim::keep_going(ui.ctx());
+            }
+        }
+
+        // One marker for the whole list, which springs from the script you were
+        // on to the one you just opened rather than blinking between them.
+        if let Some(r) = selected_row {
+            let y = anim::spring_to(ui.ctx(), "ns-rail-marker", r.center().y, 0.45);
+            let x = anim::glide(ui.ctx(), "ns-rail-marker-x", r.left() + 7.5, 0.30);
+            let bar = Rect::from_center_size(Pos2::new(x, y), Vec2::new(3.0, r.height() - 20.0));
+            ui.painter()
+                .rect_filled(bar, egui::Rounding::same(2.0), p.primary_light);
+            if (y - r.center().y).abs() > 0.4 {
+                anim::keep_going(ui.ctx());
+            }
+        }
+
+        if shown == 0 {
+            ui.add_space(14.0);
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(if needle.is_empty() {
+                        "No scripts yet."
+                    } else {
+                        "Nothing matches."
+                    })
+                    .font(theme::font(theme::T_SM))
+                    .color(p.text_faint),
+                );
+            });
         }
     }
 
-    // ---------- shortcuts ----------
+    fn script_row(
+        &self,
+        ui: &mut egui::Ui,
+        e: &Entry,
+        open: &mut Option<PathBuf>,
+        ask: &mut Option<PathBuf>,
+        star: &mut Option<PathBuf>,
+        menu: &mut Option<(PathBuf, Pos2)>,
+    ) -> Rect {
+        let p = pal();
+        let selected = self.path.as_deref() == Some(e.path.as_path());
+        let w = ui.available_width();
+        let (slot, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), Sense::click());
+        // filed under its section's header, drawn in from its edge
+        let rect = Rect::from_min_max(Pos2::new(slot.left() + INDENT, slot.top()), slot.max);
+        let _ = ui.interact(rect, row_id(&e.path), Sense::hover());
+        let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || selected, 0.16);
+
+        let fill = if selected {
+            p.primary_quiet
+        } else {
+            theme::mix(p.solid_hi, p.raised, hot)
+        };
+        ui.painter()
+            .rect_filled(rect, egui::Rounding::same(theme::R_MD), fill);
+
+        // the open script's title is the live one, not the one on disk
+        let title = if selected { self.title_or_untitled() } else { e.title.clone() };
+        let right_pad = 4.0 + 26.0 * (hot.max(if e.starred { 1.0 } else { 0.0 }));
+        ui.painter().text(
+            Pos2::new(rect.left() + 16.0, rect.top() + 14.0),
+            egui::Align2::LEFT_CENTER,
+            ui::elide(&title, ((rect.width() - 34.0 - right_pad) / 6.6) as usize),
+            if selected {
+                theme::font_med(theme::T_SM)
+            } else {
+                theme::font(theme::T_SM)
+            },
+            if selected { p.primary_light } else { p.text },
+        );
+        let pages = if selected { self.layout.pages } else { e.pages };
+        ui.painter().text(
+            Pos2::new(rect.left() + 16.0, rect.bottom() - 13.0),
+            egui::Align2::LEFT_CENTER,
+            format!("{pages} pg · {}", relative_time(e.modified)),
+            theme::font_mono(theme::T_MICRO),
+            p.text_faint,
+        );
+
+        let star_rect = Rect::from_center_size(
+            Pos2::new(rect.right() - 44.0, rect.center().y),
+            Vec2::splat(24.0),
+        );
+        let del_rect = Rect::from_center_size(
+            Pos2::new(rect.right() - 20.0, rect.center().y),
+            Vec2::splat(24.0),
+        );
+        let star_resp = ui.interact(star_rect, resp.id.with("star"), Sense::click());
+        let del_resp = ui.interact(del_rect, resp.id.with("del"), Sense::click());
+
+        // the star and the bin light *themselves* up rather than sitting on a
+        // lozenge
+        let star_hot = anim::ease(ui.ctx(), star_resp.id, star_resp.hovered(), 0.14);
+        if e.starred || hot > 0.02 {
+            let lit = if e.starred { 1.0 } else { hot };
+            icons::draw(
+                ui.painter(),
+                star_rect.shrink(6.0),
+                if e.starred { Icon::StarFilled } else { Icon::Star },
+                if e.starred {
+                    theme::lighten(p.warn, 0.2 * star_hot)
+                } else {
+                    theme::mix(theme::wash(p.text_faint, (200.0 * lit) as u8), p.warn, star_hot)
+                },
+            );
+        }
+        let del_hot = anim::ease(ui.ctx(), del_resp.id, del_resp.hovered(), 0.14);
+        if hot > 0.02 {
+            icons::draw(
+                ui.painter(),
+                del_rect.shrink(6.0),
+                Icon::Trash,
+                theme::mix(theme::wash(p.text_faint, (200.0 * hot) as u8), p.danger_light, del_hot),
+            );
+        }
+
+        if star_resp.clicked() {
+            *star = Some(e.path.clone());
+        } else if del_resp.clicked() {
+            *ask = Some(e.path.clone());
+        } else if resp.clicked() && !selected {
+            *open = Some(e.path.clone());
+        }
+        if resp.secondary_clicked() {
+            if let Some(q) = ui.ctx().pointer_latest_pos() {
+                *menu = Some((e.path.clone(), q));
+            }
+        }
+        let _ = star_resp.on_hover_text(if e.starred { "Unstar" } else { "Star this script" });
+        let _ = del_resp.on_hover_text("Delete this script");
+        if !e.preview.is_empty() {
+            let _ = resp.on_hover_text(format!("{}\n{} scenes · right click for more", e.preview, e.scenes));
+        }
+
+        ui.add_space(5.0);
+        rect
+    }
+
+    fn row_menu(&mut self, ctx: &egui::Context) {
+        let Some((path, at, opened)) = self.rail.menu.clone() else {
+            return;
+        };
+        let starred = self.entries.iter().find(|e| e.path == path).map(|e| e.starred).unwrap_or(false);
+        let mut close = false;
+        let area = egui::Area::new(egui::Id::new("ns-row-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ctx, |ui| {
+                ui::popover_frame().show(ui, |ui| {
+                    ui.set_width(ui::menu_width(ui, &["Open", "Duplicate", "Show the file", "Remove the star", "Delete script"]));
+                    let mut rects = Vec::new();
+                    if ui::menu_item(ui, &mut rects, "Open", Icon::Pencil, false) {
+                        if self.path.as_deref() != Some(path.as_path()) {
+                            self.open(path.clone());
+                        }
+                        close = true;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Duplicate", Icon::Copy, false) {
+                        self.duplicate(&path);
+                        close = true;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
+                        storage::reveal_in_file_manager(&path);
+                        close = true;
+                    }
+                    if ui::menu_item(
+                        ui,
+                        &mut rects,
+                        if starred { "Remove the star" } else { "Star this script" },
+                        if starred { Icon::Star } else { Icon::StarFilled },
+                        false,
+                    ) {
+                        self.toggle_star(&path);
+                        close = true;
+                    }
+                    ui::separator(ui);
+                    if ui::menu_item(ui, &mut rects, "Delete script", Icon::Trash, true) {
+                        self.ask_delete(path.clone());
+                        close = true;
+                    }
+                });
+            })
+            .response;
+        let d = ui::Dismisser { opened_on: opened };
+        if close
+            || d.should_close(ctx, self.frame_no, &[area.rect])
+            || ctx.input(|i| i.key_pressed(egui::Key::Escape))
+        {
+            self.rail.menu = None;
+        }
+    }
+
+    // ---------- the right island ----------
+
+    fn aside(&mut self, ctx: &egui::Context) {
+        if !(self.settings.show_scenes || self.settings.show_cast) || self.focus_mode {
+            return;
+        }
+        egui::SidePanel::right("ns-aside")
+            .exact_width(theme::OUTLINE_W + theme::GAP)
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(egui::Frame::none().inner_margin(egui::Margin {
+                left: 0.0,
+                right: theme::GAP,
+                top: theme::GAP,
+                bottom: theme::GAP,
+            }))
+            .show(ctx, |ui| {
+                theme::island_frame(theme::R_ISLAND)
+                    .inner_margin(egui::Margin::symmetric(12.0, 14.0))
+                    .show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+                        let both = self.settings.show_scenes && self.settings.show_cast;
+                        if self.settings.show_scenes {
+                            let h = if both {
+                                (ui.available_height() * 0.58).max(120.0)
+                            } else {
+                                ui.available_height()
+                            };
+                            let (rect, _) =
+                                ui.allocate_exact_size(Vec2::new(ui.available_width(), h), Sense::hover());
+                            let mut child = ui.new_child(
+                                egui::UiBuilder::new()
+                                    .max_rect(rect)
+                                    .layout(Layout::top_down(Align::Min)),
+                            );
+                            self.scene_outliner(&mut child);
+                        }
+                        if both {
+                            ui::separator(ui);
+                        }
+                        if self.settings.show_cast {
+                            self.cast_panel(ui);
+                        }
+                    });
+            });
+    }
+
+    /// Every scene, in order, on a mini rail of its own — the navigator.
+    fn scene_outliner(&mut self, ui: &mut egui::Ui) {
+        let p = pal();
+        let scenes = self.doc.scenes();
+        let live = self.ed.focus_block.and_then(|id| self.doc.scene_of(id));
+
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            icons::show(ui, Icon::List, 12.0, p.text_faint);
+            ui.label(
+                egui::RichText::new("SCENES")
+                    .font(theme::font_semi(theme::T_MICRO))
+                    .color(p.text_faint),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}", scenes.len()))
+                        .font(theme::font_mono(theme::T_MICRO))
+                        .color(p.text_faint),
+                );
+            });
+        });
+        ui.add_space(8.0);
+
+        if scenes.is_empty() {
+            ui.label(
+                egui::RichText::new("No scene headings yet. Ctrl+1 turns a line into one.")
+                    .font(theme::font(theme::T_CAP))
+                    .color(p.text_faint),
+            );
+            return;
+        }
+
+        let mut jump = None;
+        egui::ScrollArea::vertical()
+            .id_salt("ns-outline")
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                let rail_shape = ui.painter().add(egui::Shape::Noop);
+                // the rail is inset from the island's edge, not pinned to it
+                let left = ui.min_rect().left() + 16.0;
+                let text_left = left + 18.0;
+                let mut dots: Vec<f32> = Vec::new();
+
+                for (i, sc) in scenes.iter().enumerate() {
+                    let w = ui.available_width();
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 38.0), Sense::click());
+                    let is_live = live == Some(i);
+                    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+
+                    if is_live || hot > 0.02 {
+                        ui.painter().rect_filled(
+                            rect.expand2(Vec2::new(0.0, -2.0)),
+                            egui::Rounding::same(theme::R_SM),
+                            theme::wash(p.primary, if is_live { 34 } else { (26.0 * hot) as u8 }),
+                        );
+                    }
+
+                    let cy = rect.center().y;
+                    dots.push(cy);
+                    let r = if is_live { 5.6 } else { 4.4 };
+                    let tint = sc.tint.map(|t| p.group(t));
+                    theme::glow_star(
+                        ui.painter(),
+                        Pos2::new(left, cy),
+                        r,
+                        tint.unwrap_or(p.sec_grad.1),
+                        13.0,
+                        0.10 + 0.22 * anim::ease(ui.ctx(), resp.id.with("lit"), is_live, 0.22),
+                    );
+                    match tint {
+                        Some(t) => theme::grad_star(ui.painter(), Pos2::new(left, cy), r, theme::darken(t, 0.2), theme::lighten(t, 0.2)),
+                        None => theme::grad_star(ui.painter(), Pos2::new(left, cy), r, p.sec_grad.0, p.sec_grad.1),
+                    }
+
+                    let name = if sc.heading.trim().is_empty() {
+                        format!("Scene {}", i + 1)
+                    } else {
+                        sc.heading.clone()
+                    };
+                    let label = if self.settings.scene_numbers {
+                        format!("{}. {name}", sc.number)
+                    } else {
+                        name
+                    };
+                    ui.painter().text(
+                        Pos2::new(text_left, cy - 6.5),
+                        egui::Align2::LEFT_CENTER,
+                        ui::elide(&label, ((rect.right() - text_left - 14.0) / 7.0) as usize),
+                        if is_live {
+                            theme::font_med(theme::T_SM)
+                        } else {
+                            theme::font(theme::T_SM)
+                        },
+                        if is_live { p.text } else { theme::mix(p.text_dim, p.text, hot) },
+                    );
+                    let (page, eighths) = self.layout.lengths.get(&sc.id).copied().unwrap_or((0, 0));
+                    let meta = if page > 0 {
+                        format!("p.{page} · {} pg · {} words", eighths_label(eighths), sc.words)
+                    } else {
+                        "empty".to_string()
+                    };
+                    ui.painter().text(
+                        Pos2::new(text_left, cy + 8.5),
+                        egui::Align2::LEFT_CENTER,
+                        meta,
+                        theme::font_mono(theme::T_MICRO),
+                        p.text_faint,
+                    );
+                    if !sc.synopsis.trim().is_empty() {
+                        let _ = resp.clone().on_hover_text(sc.synopsis.clone());
+                    }
+                    if resp.clicked() {
+                        jump = Some(sc.id);
+                    }
+                }
+
+                // the mini rail, broken around each star
+                let mut shapes = Vec::new();
+                let gap = 9.0;
+                let mut cursor = ui.min_rect().top() + 4.0;
+                let mut edges = Vec::new();
+                for cy in &dots {
+                    if cy - gap > cursor {
+                        edges.push((cursor, cy - gap));
+                    }
+                    cursor = cy + gap;
+                }
+                for (a, b) in edges {
+                    shapes.push(egui::Shape::circle_filled(Pos2::new(left, a), 1.0, p.line_strong));
+                    shapes.push(egui::Shape::circle_filled(Pos2::new(left, b), 1.0, p.line_strong));
+                    shapes.push(egui::Shape::line_segment(
+                        [Pos2::new(left, a), Pos2::new(left, b)],
+                        Stroke::new(2.0_f32, p.line_strong),
+                    ));
+                }
+                ui.painter().set(rail_shape, egui::Shape::Vec(shapes));
+            });
+
+        if let Some(id) = jump {
+            self.mode = Mode::Write;
+            self.ed.jump_to(id);
+        }
+    }
+
+    /// Everyone who speaks, and the balance of talk to action.
+    fn cast_panel(&mut self, ui: &mut egui::Ui) {
+        let p = pal();
+        ui.horizontal(|ui| {
+            ui.add_space(4.0);
+            icons::show(ui, Icon::Users, 13.0, p.text_faint);
+            ui.label(
+                egui::RichText::new("CAST")
+                    .font(theme::font_semi(theme::T_MICRO))
+                    .color(p.text_faint),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{}", self.layout.cast.len()))
+                        .font(theme::font_mono(theme::T_MICRO))
+                        .color(p.text_faint),
+                );
+            });
+        });
+        ui.add_space(6.0);
+
+        if self.layout.cast.is_empty() {
+            ui.label(
+                egui::RichText::new("Nobody speaks yet. A character cue is Ctrl+3.")
+                    .font(theme::font(theme::T_CAP))
+                    .color(p.text_faint),
+            );
+            return;
+        }
+
+        let mut jump: Option<(String, u64)> = None;
+        let cast = self.layout.cast.clone();
+        let list_h = (ui.available_height() - 46.0).max(40.0);
+        egui::ScrollArea::vertical()
+            .id_salt("ns-cast")
+            .auto_shrink([false; 2])
+            .max_height(list_h)
+            .show(ui, |ui| {
+                for (k, c) in cast.iter().enumerate() {
+                    let w = ui.available_width();
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
+                    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.12);
+                    if hot > 0.02 {
+                        ui.painter().rect_filled(
+                            rect,
+                            egui::Rounding::same(theme::R_SM),
+                            theme::wash(p.primary, (30.0 * hot) as u8),
+                        );
+                    }
+                    ui.painter().circle_filled(
+                        Pos2::new(rect.left() + 12.0, rect.center().y),
+                        3.0,
+                        p.group(k),
+                    );
+                    ui.painter().text(
+                        Pos2::new(rect.left() + 24.0, rect.center().y),
+                        egui::Align2::LEFT_CENTER,
+                        ui::elide(&c.name, ((rect.width() - 70.0) / 6.3) as usize),
+                        theme::font(theme::T_SM),
+                        theme::mix(p.text_dim, p.text, hot),
+                    );
+                    ui.painter().text(
+                        Pos2::new(rect.right() - 8.0, rect.center().y),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("{}", c.cues),
+                        theme::font_mono(theme::T_MICRO),
+                        p.text_faint,
+                    );
+                    let resp = resp.on_hover_text(format!(
+                        "{} cue{} · {} words · {} scene{}\nClick to step through their lines",
+                        c.cues,
+                        if c.cues == 1 { "" } else { "s" },
+                        c.words,
+                        c.scenes,
+                        if c.scenes == 1 { "" } else { "s" }
+                    ));
+                    if resp.clicked() {
+                        let n = self.cast_cursor.get(&c.name).copied().unwrap_or(0);
+                        if let Some(id) = c.cue_ids.get(n % c.cue_ids.len().max(1)) {
+                            jump = Some((c.name.clone(), *id));
+                        }
+                    }
+                }
+            });
+        if let Some((name, id)) = jump {
+            *self.cast_cursor.entry(name).or_insert(0) += 1;
+            self.mode = Mode::Write;
+            self.ed.jump_to(id);
+        }
+
+        // the balance of the script: how much of it is talk
+        ui.add_space(8.0);
+        let d = self.layout.dialogue;
+        ui.label(
+            egui::RichText::new(format!(
+                "dialogue {:.0}% · the rest {:.0}%",
+                d * 100.0,
+                (1.0 - d) * 100.0
+            ))
+            .font(theme::font_mono(theme::T_MICRO))
+            .color(p.text_faint),
+        );
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 10.0), Sense::hover());
+        let track = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), 5.0));
+        ui.painter()
+            .rect_filled(track, egui::Rounding::same(3.0), theme::wash(p.text_faint, 55));
+        if d > 0.0 {
+            let fill = Rect::from_min_max(track.min, Pos2::new(track.left() + track.width() * d, track.bottom()));
+            theme::grad_rect(ui.painter(), fill, 3.0, p.prim_grad.0, p.prim_grad.1, Vec2::new(1.0, 0.0));
+        }
+    }
+
+    // ---------- the pages ----------
+
+    /// 0 → 1 across the moment after the page changed what it is showing.
+    fn page_arrival(&self, ctx: &egui::Context) -> f32 {
+        if !anim::enabled() {
+            return 1.0;
+        }
+        let t = (self.page_born.elapsed().as_secs_f32() / 0.55).clamp(0.0, 1.0);
+        if t < 1.0 {
+            ctx.request_repaint();
+        }
+        anim::bounce(t)
+    }
+
+    fn page(&mut self, ctx: &egui::Context) {
+        let arrive = self.page_arrival(ctx);
+        let mode = self.mode;
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().inner_margin(egui::Margin::same(theme::GAP)))
+            .show(ctx, |ui| {
+                theme::island_frame(theme::R_ISLAND)
+                    .inner_margin(egui::Margin::ZERO)
+                    .show(ui, |ui| {
+                        ui.set_min_size(ui.available_size());
+                        let island = ui.max_rect();
+                        self.page_rect = island;
+                        // the page rises into the island, masked by its edge
+                        let mut ui = slide_in(ui, island, arrive, if mode == Mode::Write { 40.0 } else { 24.0 });
+                        let ui = &mut ui;
+                        match mode {
+                            Mode::Write => self.write_page(ui),
+                            Mode::Cards => self.cards_page(ui),
+                            Mode::Pages => self.pages_page(ui),
+                        }
+                    });
+            });
+    }
+
+    fn write_page(&mut self, ui: &mut egui::Ui) {
+        let mut changed = false;
+        let starts = std::mem::take(&mut self.layout.page_starts);
+        egui::ScrollArea::vertical()
+            .id_salt("ns-write")
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                let avail = ui.available_width();
+                let col = editor::column_width(ui, self.ed.font_px).min(avail - 16.0);
+                let pad = ((avail - col) * 0.5).max(8.0);
+
+                changed |= self.banner(ui, avail, pad);
+                ui.add_space(18.0);
+
+                let needle = if self.find.open { Some(self.find.needle.clone()) } else { None };
+                let current = if self.find.open {
+                    self.doc.find(&self.find.needle).get(self.find.current).copied()
+                } else {
+                    None
+                };
+                let view = editor::View {
+                    page_starts: &starts,
+                    page_breaks: self.settings.page_breaks,
+                    scene_numbers: self.settings.scene_numbers,
+                    smart_type: self.settings.smart_type,
+                    typewriter: self.settings.typewriter,
+                    focus_mode: self.focus_mode,
+                    find: needle.as_deref(),
+                    current,
+                };
+                ui.horizontal(|ui| {
+                    ui.add_space(pad);
+                    ui.vertical(|ui| {
+                        ui.set_width(col);
+                        ui.set_max_width(col);
+                        changed |= editor::show(ui, &mut self.doc, &mut self.ed, &view);
+                        ui.add_space(90.0);
+                    });
+                });
+            });
+        self.layout.page_starts = starts;
+        if changed {
+            self.mark_changed();
+        }
+    }
+
+    /// The band across the head of the script: its title, set large, on
+    /// frosted glass with the island's own top corners; under it the file, who
+    /// wrote it, the draft, and the way into the title page.
+    fn banner(&mut self, ui: &mut egui::Ui, avail: f32, pad: f32) -> bool {
+        let p = pal();
+        let mut changed = false;
+        let banner_bg = ui.painter().add(egui::Shape::Noop);
+        let (band, _) = ui.allocate_exact_size(Vec2::new(avail, BANNER_H), Sense::hover());
+        let mut head = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_max(
+                    Pos2::new(band.left() + pad, band.top() + 16.0),
+                    Pos2::new(band.right() - pad, band.bottom()),
+                ))
+                .layout(Layout::top_down(Align::Min)),
+        );
+        let title_id = egui::Id::new("ns-script-title");
+        let r = head.add(
+            egui::TextEdit::singleline(&mut self.doc.meta.title)
+                .id(title_id)
+                .frame(false)
+                .desired_width(f32::INFINITY)
+                .font(theme::font_semi(theme::T_TITLE))
+                .text_color(p.text)
+                .margin(egui::Margin {
+                    left: editor::GUTTER,
+                    right: 16.0,
+                    top: 2.0,
+                    bottom: 2.0,
+                })
+                .hint_text("Name this script"),
+        );
+        if self.focus_title {
+            r.request_focus();
+            let n = caret::char_len(&self.doc.meta.title);
+            caret::select(ui.ctx(), title_id, 0, n);
+            self.focus_title = false;
+        }
+        if r.changed() {
+            changed = true;
+        }
+        // Enter on the title goes on into the script
+        if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            if let Some(b) = self.doc.blocks.first() {
+                self.ed.focus(b.id, Caret::End);
+            }
+        }
+
+        let mut open_title_page = false;
+        let chip_rect = head
+            .horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(6.0, 4.0);
+                ui.add_space(editor::GUTTER);
+                let file = self
+                    .path
+                    .as_ref()
+                    .and_then(|x| x.file_name())
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("not saved yet")
+                    .to_string();
+                ui.label(
+                    egui::RichText::new(file)
+                        .font(theme::font_mono(theme::T_CAP))
+                        .color(p.text_faint),
+                );
+                ui.add_space(2.0);
+                if !self.doc.meta.author.trim().is_empty() {
+                    ui::chip(ui, &format!("by {}", self.doc.meta.author.trim()), Some(p.primary));
+                }
+                if !self.doc.meta.draft.trim().is_empty() {
+                    ui::chip(ui, self.doc.meta.draft.trim(), Some(p.sec));
+                }
+                let pg = self.layout.pages;
+                ui::chip(ui, &format!("{pg} page{} · ~{pg} min", if pg == 1 { "" } else { "s" }), None);
+                let before = ui.cursor().min;
+                if ui::chip_button(ui, "+ title page") {
+                    open_title_page = true;
+                }
+                Rect::from_min_size(before, Vec2::new(90.0, 19.0))
+            })
+            .inner;
+        self.title_chip_rect = chip_rect;
+        if open_title_page {
+            self.toggle_popover(Popover::TitlePage);
+        }
+        ui.painter().set(banner_bg, banner_shape(band));
+        changed
+    }
+
+    fn cards_page(&mut self, ui: &mut egui::Ui) {
+        let live = self
+            .ed
+            .focus_block
+            .and_then(|id| self.doc.scene_of(id))
+            .and_then(|k| self.doc.scenes().get(k).map(|s| s.id));
+        let lengths = self.layout.lengths.clone();
+        let mut out = cards::Out { changed: false, act: None };
+        egui::ScrollArea::vertical()
+            .id_salt("ns-cards")
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                out = cards::show(ui, &mut self.doc, &mut self.cards, &lengths, live, self.frame_no);
+            });
+        if out.changed {
+            self.mark_changed();
+        }
+        match out.act {
+            Some(cards::Act::Open(id)) => {
+                self.mode = Mode::Write;
+                self.ed.jump_to(id);
+            }
+            Some(cards::Act::Move(from, to)) => {
+                self.checkpoint();
+                if self.doc.move_scene(from, to) {
+                    self.mark_changed();
+                    self.snapshot_due = false;
+                    self.baseline = self.doc.clone();
+                    self.deck.ok("Scene moved", "Ctrl+Z puts it back");
+                }
+            }
+            Some(cards::Act::Tint(id, t)) => {
+                if let Some(i) = self.doc.index_of(id) {
+                    self.checkpoint();
+                    self.doc.blocks[i].tint = t;
+                    self.mark_changed();
+                    self.snapshot_due = false;
+                    self.baseline = self.doc.clone();
+                }
+            }
+            Some(cards::Act::Delete(n)) => self.ask_delete_scene(n),
+            Some(cards::Act::NewScene) => {
+                // at the very end, as the card sits at the end of the wall
+                self.checkpoint();
+                let b = self.doc.new_block(Element::SceneHeading, "");
+                let id = b.id;
+                self.doc.blocks.push(b);
+                self.mark_changed();
+                self.snapshot_due = false;
+                self.baseline = self.doc.clone();
+                self.mode = Mode::Write;
+                self.ed.focus(id, Caret::Start);
+                self.ed.scroll_to_focus = true;
+            }
+            None => {}
+        }
+    }
+
+    fn pages_page(&mut self, ui: &mut egui::Ui) {
+        let mut jump = None;
+        egui::ScrollArea::vertical()
+            .id_salt("ns-pages")
+            .auto_shrink([false; 2])
+            .show(ui, |ui| {
+                jump = pages::show(ui, &self.doc, &mut self.pages, self.settings.scene_numbers);
+            });
+        if let Some(id) = jump {
+            self.mode = Mode::Write;
+            self.ed.jump_to(id);
+        }
+    }
+
+    // ---------- find & replace ----------
+
+    fn find_bar(&mut self, ctx: &egui::Context) {
+        if !self.find.open || self.mode != Mode::Write {
+            return;
+        }
+        let p = pal();
+        let matches = self.doc.find(&self.find.needle);
+        if self.find.current >= matches.len() {
+            self.find.current = 0;
+        }
+        let n_len = self.find.needle.chars().count();
+        let field_id = egui::Id::new("ns-find-field");
+        let replace_id = egui::Id::new("ns-find-replace");
+
+        // Enter steps through the results without leaving the field
+        let in_field = ctx.memory(|m| m.has_focus(field_id));
+        let mut step: i32 = 0;
+        if in_field {
+            ctx.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter) {
+                    step = -1;
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                    step = 1;
+                }
+            });
+        }
+
+        let w = 404.0;
+        let h = 78.0;
+        let at = Pos2::new(self.page_rect.right() - w - 16.0, self.page_rect.top() + 16.0);
+        let mut replace_one = false;
+        let mut replace_all = false;
+        let mut close = false;
+        let area = egui::Area::new(egui::Id::new("ns-find"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(at)
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+                // glass: it floats over the work
+                theme::glow_rect(ui.painter(), rect, theme::R_MD, p.primary, 16.0, 0.12);
+                theme::glass_surface(ui.painter(), rect, theme::R_MD, 0.96);
+                let inner = rect.shrink2(Vec2::new(14.0, 8.0));
+                let mut child = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(inner)
+                        .layout(Layout::top_down(Align::Min)),
+                );
+                child.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+                child.horizontal(|ui| {
+                    icons::show(ui, Icon::Search, 13.0, p.text_faint);
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.find.needle)
+                            .id(field_id)
+                            .desired_width(186.0)
+                            .margin(egui::Margin::symmetric(8.0, 5.0))
+                            .hint_text("Find in the script"),
+                    );
+                    if self.find.focus {
+                        resp.request_focus();
+                        self.find.focus = false;
+                    }
+                    if resp.changed() {
+                        self.find.current = 0;
+                        step = 0;
+                    }
+                    let count = if self.find.needle.is_empty() {
+                        String::new()
+                    } else if matches.is_empty() {
+                        "none".to_string()
+                    } else {
+                        format!("{} of {}", self.find.current + 1, matches.len())
+                    };
+                    ui.add_sized(
+                        Vec2::new(52.0, 24.0),
+                        egui::Label::new(
+                            egui::RichText::new(count)
+                                .font(theme::font_mono(theme::T_MICRO))
+                                .color(p.text_faint),
+                        ),
+                    );
+                    if ui::icon_button(ui, Icon::ChevronUp, "Previous · Shift+Enter", 24.0) {
+                        step = -1;
+                    }
+                    if ui::icon_button(ui, Icon::ChevronDown, "Next · Enter", 24.0) {
+                        step = 1;
+                    }
+                    if ui::icon_button_tinted(ui, Icon::Close, "Close · Esc", 24.0, None) {
+                        close = true;
+                    }
+                });
+                child.horizontal(|ui| {
+                    icons::show(ui, Icon::Refresh, 13.0, p.text_faint);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.find.with)
+                            .id(replace_id)
+                            .desired_width(186.0)
+                            .margin(egui::Margin::symmetric(8.0, 5.0))
+                            .hint_text("Replace with"),
+                    );
+                    if ui::button_sized(ui, "Replace", None, false, Some(72.0)) {
+                        replace_one = true;
+                    }
+                    if ui::button_sized(ui, "All", None, true, Some(48.0)) {
+                        replace_all = true;
+                    }
+                });
+            })
+            .response;
+        self.find.rect = Some(area.rect);
+
+        if !matches.is_empty() && step != 0 {
+            let n = matches.len() as i32;
+            self.find.current = ((self.find.current as i32 + step).rem_euclid(n)) as usize;
+        }
+        if let Some(&(id, start)) = matches.get(self.find.current) {
+            if step != 0 {
+                // show the result, keeping the keyboard in the field
+                self.ed.select(id, start, start + n_len);
+                self.find.focus = true;
+            }
+        }
+        if replace_one {
+            if let Some(&(id, start)) = matches.get(self.find.current) {
+                if let Some(i) = self.doc.index_of(id) {
+                    self.checkpoint();
+                    let chars: Vec<char> = self.doc.blocks[i].text.chars().collect();
+                    let end = (start + n_len).min(chars.len());
+                    let mut t: String = chars[..start].iter().collect();
+                    t.push_str(&self.find.with);
+                    t.extend(chars[end..].iter());
+                    if self.doc.blocks[i].element.is_upper() {
+                        t = t.to_uppercase();
+                    }
+                    self.doc.blocks[i].text = t;
+                    self.mark_changed();
+                    self.snapshot_due = false;
+                    self.baseline = self.doc.clone();
+                }
+            }
+        }
+        if replace_all && !self.find.needle.is_empty() {
+            self.checkpoint();
+            let n = self.doc.replace_all(&self.find.needle.clone(), &self.find.with.clone());
+            if n > 0 {
+                self.mark_changed();
+                self.snapshot_due = false;
+                self.baseline = self.doc.clone();
+                self.ed.fresh = true;
+                self.deck.ok(
+                    &format!("Replaced {n}"),
+                    "Ctrl+Z puts them back",
+                );
+            } else {
+                self.undo.pop();
+                self.deck.say("Nothing to replace", "", Tone::Info);
+            }
+        }
+        if close {
+            self.find.open = false;
+        }
+    }
+
+    // ---------- popovers ----------
+
+    fn popovers(&mut self, ctx: &egui::Context) {
+        match self.popover {
+            Some(Popover::Menu) => self.more_menu(ctx),
+            Some(Popover::Settings) => self.settings_panel(ctx),
+            Some(Popover::TitlePage) => self.title_page_panel(ctx),
+            Some(Popover::Snapshots) => self.snapshots_panel(ctx),
+            Some(Popover::Elements) => self.elements_menu(ctx),
+            None => {}
+        }
+        self.row_menu(ctx);
+    }
+
+    fn more_menu(&mut self, ctx: &egui::Context) {
+        let screen = ctx.screen_rect();
+        let anchor = self.menu_button_rect;
+        let area = egui::Area::new(egui::Id::new("ns-menu"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(
+                (anchor.right() - 236.0).max(screen.left() + 8.0),
+                theme::TOPBAR_H + 4.0,
+            ))
+            .show(ctx, |ui| {
+                ui::popover_frame().show(ui, |ui| {
+                    ui.set_width(ui::menu_width(
+                        ui,
+                        &[
+                            "Export Final Draft (.fdx)",
+                            "Import a script…",
+                            "Open the exports folder",
+                            "Snapshots…",
+                        ],
+                    ));
+                    let mut rects = Vec::new();
+                    ui::section(ui, "Export");
+                    if ui::menu_item(ui, &mut rects, "Export PDF", Icon::Print, false) {
+                        self.export(Format::Pdf, false);
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Export Final Draft (.fdx)", Icon::Download, false) {
+                        self.export(Format::FinalDraft, false);
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Export Fountain", Icon::Download, false) {
+                        self.export(Format::Fountain, false);
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Export plain text", Icon::File, false) {
+                        self.export(Format::Text, false);
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Open the exports folder", Icon::Folder, false) {
+                        storage::open_with_desktop(&storage::exports_dir());
+                        self.popover = None;
+                    }
+                    ui::separator(ui);
+                    if ui::menu_item(ui, &mut rects, "Import a script…", Icon::Upload, false) {
+                        self.start_import();
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Take a snapshot", Icon::Copy, false) {
+                        self.take_snapshot();
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Snapshots…", Icon::History, false) {
+                        self.popover = Some(Popover::Snapshots);
+                        self.popover_frame = self.frame_no;
+                    }
+                    ui::separator(ui);
+                    if ui::menu_item(ui, &mut rects, "Find and replace", Icon::Search, false) {
+                        self.mode = Mode::Write;
+                        self.find.open = true;
+                        self.find.focus = true;
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Rename script", Icon::Pencil, false) {
+                        let seed = self.doc.meta.title.clone();
+                        self.deck.prompt(
+                            "Rename script",
+                            "The file on disk follows the title.",
+                            "Script title",
+                            &seed,
+                            "Rename",
+                            Ask::RenameScript,
+                        );
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Duplicate", Icon::Copy, false) {
+                        if let Some(path) = self.path.clone() {
+                            self.duplicate(&path);
+                        }
+                        self.popover = None;
+                    }
+                    let starred = self.doc.meta.starred;
+                    if ui::menu_item(
+                        ui,
+                        &mut rects,
+                        if starred { "Remove the star" } else { "Star this script" },
+                        if starred { Icon::Star } else { Icon::StarFilled },
+                        false,
+                    ) {
+                        if let Some(path) = self.path.clone() {
+                            self.toggle_star(&path);
+                        }
+                        self.popover = None;
+                    }
+                    if ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
+                        match &self.path {
+                            Some(pth) => storage::reveal_in_file_manager(pth),
+                            None => storage::open_with_desktop(&storage::scripts_dir()),
+                        }
+                        self.popover = None;
+                    }
+                    ui::separator(ui);
+                    if ui::menu_item(ui, &mut rects, "Delete script", Icon::Trash, true) {
+                        if let Some(path) = self.path.clone() {
+                            self.ask_delete(path);
+                        }
+                        self.popover = None;
+                    }
+                    self.menu_item_rects = rects;
+                });
+            })
+            .response;
+        self.close_popover_if_outside(ctx, &[area.rect, self.menu_button_rect]);
+    }
+
+    fn snapshots_panel(&mut self, ctx: &egui::Context) {
+        let p = pal();
+        let screen = ctx.screen_rect();
+        let anchor = self.menu_button_rect;
+        let snaps = self
+            .path
+            .as_ref()
+            .map(|x| storage::list_snapshots(x))
+            .unwrap_or_default();
+        let area = egui::Area::new(egui::Id::new("ns-snapshots"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(
+                (anchor.right() - 280.0).max(screen.left() + 8.0),
+                theme::TOPBAR_H + 4.0,
+            ))
+            .show(ctx, |ui| {
+                ui::popover_frame()
+                    .inner_margin(egui::Margin::symmetric(10.0, 10.0))
+                    .show(ui, |ui| {
+                        ui.set_width(260.0);
+                        ui.horizontal(|ui| {
+                            icons::show(ui, Icon::History, 14.0, p.primary);
+                            ui.label(
+                                egui::RichText::new("Snapshots")
+                                    .font(theme::font_semi(theme::T_H - 1.0))
+                                    .color(p.text),
+                            );
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Dated copies of this script. Restoring one keeps what is there now as a snapshot too.")
+                                .font(theme::font(theme::T_CAP))
+                                .color(p.text_faint),
+                        );
+                        ui.add_space(6.0);
+                        let mut rects = Vec::new();
+                        if snaps.is_empty() {
+                            ui.label(
+                                egui::RichText::new("None yet.")
+                                    .font(theme::font(theme::T_SM))
+                                    .color(p.text_dim),
+                            );
+                        }
+                        egui::ScrollArea::vertical()
+                            .max_height(320.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                for s in &snaps {
+                                    if ui::menu_item(
+                                        ui,
+                                        &mut rects,
+                                        &format!("{}  ·  {} pg", s.when, s.pages),
+                                        Icon::History,
+                                        false,
+                                    ) {
+                                        self.ask_restore(s);
+                                        self.popover = None;
+                                    }
+                                }
+                            });
+                        ui::separator(ui);
+                        if ui::button_sized(ui, "Take a snapshot now", Some(Icon::Plus), true, Some(ui.available_width())) {
+                            self.take_snapshot();
+                        }
+                    });
+            })
+            .response;
+        self.close_popover_if_outside(ctx, &[area.rect, self.menu_button_rect]);
+    }
+
+    fn elements_menu(&mut self, ctx: &egui::Context) {
+        let anchor = self.element_button_rect;
+        let current = self.ed.current_element(&self.doc);
+        let area = egui::Area::new(egui::Id::new("ns-elements"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(anchor.left(), anchor.bottom() + 6.0))
+            .show(ctx, |ui| {
+                ui::popover_frame().show(ui, |ui| {
+                    let labels: Vec<String> = Element::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(k, e)| format!("{}  ·  Ctrl+{}", e.label(), k + 1))
+                        .collect();
+                    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+                    ui.set_width(ui::menu_width(ui, &refs));
+                    let mut rects = Vec::new();
+                    for (k, e) in Element::ALL.iter().enumerate() {
+                        let icon = if current == Some(*e) { Icon::Check } else { Icon::Minus };
+                        if ui::menu_item(ui, &mut rects, &labels[k], icon, false) {
+                            if editor::set_element(&mut self.doc, &mut self.ed, *e) {
+                                self.mark_changed();
+                            }
+                            self.popover = None;
+                        }
+                    }
+                });
+            })
+            .response;
+        self.close_popover_if_outside(ctx, &[area.rect, self.element_button_rect]);
+    }
+
+    fn title_page_panel(&mut self, ctx: &egui::Context) {
+        let p = pal();
+        let screen = ctx.screen_rect();
+        let anchor = self.title_chip_rect;
+        let mut edited = false;
+        let area = egui::Area::new(egui::Id::new("ns-title-page"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(
+                anchor.left().min(screen.right() - 340.0).max(screen.left() + 8.0),
+                anchor.bottom() + 8.0,
+            ))
+            .show(ctx, |ui| {
+                ui::popover_frame()
+                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(300.0);
+                        ui.horizontal(|ui| {
+                            icons::show(ui, Icon::File, 14.0, p.primary);
+                            ui.label(
+                                egui::RichText::new("Title page")
+                                    .font(theme::font_semi(theme::T_H))
+                                    .color(p.text),
+                            );
+                        });
+                        ui.add_space(8.0);
+                        for (label, value, hint) in [
+                            ("Title", &mut self.doc.meta.title, "The Long Way Down"),
+                            ("Written by", &mut self.doc.meta.author, "A. Writer"),
+                            ("Draft", &mut self.doc.meta.draft, "First Draft"),
+                            ("Contact", &mut self.doc.meta.contact, "agent@example.com"),
+                        ] {
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .font(theme::font_med(theme::T_CAP))
+                                    .color(p.text_faint),
+                            );
+                            ui.add_space(-4.0);
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(value)
+                                        .desired_width(f32::INFINITY)
+                                        .margin(egui::Margin::symmetric(10.0, 7.0))
+                                        .hint_text(hint),
+                                )
+                                .changed()
+                            {
+                                edited = true;
+                            }
+                            ui.add_space(2.0);
+                        }
+                        ui.horizontal(|ui| {
+                            if ui::chip_button(ui, "draft: today") {
+                                self.doc.meta.draft = today();
+                                edited = true;
+                            }
+                            if ui::chip_button(ui, "draft: first") {
+                                self.doc.meta.draft = "First Draft".into();
+                                edited = true;
+                            }
+                            if ui::chip_button(ui, "draft: revised") {
+                                self.doc.meta.draft = format!("Revised {}", today());
+                                edited = true;
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("Printed on its own page at the front of the PDF, and carried into Final Draft and Fountain.")
+                                .font(theme::font(theme::T_MICRO))
+                                .color(p.text_faint),
+                        );
+                    });
+            })
+            .response;
+        if edited {
+            self.mark_changed();
+        }
+        self.close_popover_if_outside(ctx, &[area.rect, self.title_chip_rect]);
+    }
+
+    fn settings_panel(&mut self, ctx: &egui::Context) {
+        let p = pal();
+        let screen = ctx.screen_rect();
+        let before = self.settings.clone();
+        let anchor = self.settings_button_rect;
+        let tess = storage::tesseract_settings_path().exists();
+        let area = egui::Area::new(egui::Id::new("ns-settings"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(Pos2::new(
+                (anchor.right() - 330.0).max(screen.left() + 8.0),
+                theme::TOPBAR_H + 2.0,
+            ))
+            .show(ctx, |ui| {
+                ui::popover_frame()
+                    .inner_margin(egui::Margin::symmetric(14.0, 12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(304.0);
+                        ui.horizontal(|ui| {
+                            icons::show(ui, Icon::Settings, 14.0, p.primary);
+                            ui.label(
+                                egui::RichText::new("Settings")
+                                    .font(theme::font_semi(theme::T_H))
+                                    .color(p.text),
+                            );
+                        });
+                        ui.add_space(6.0);
+
+                        // An Area sizes itself from what it drew last frame, so
+                        // give the scroll area its room outright.
+                        let tall = (screen.height() - theme::TOPBAR_H - 58.0).clamp(240.0, 780.0);
+                        let (body, _) =
+                            ui.allocate_exact_size(Vec2::new(304.0, tall), Sense::hover());
+                        let mut ui = ui.new_child(
+                            egui::UiBuilder::new()
+                                .max_rect(body)
+                                .layout(Layout::top_down(Align::Min)),
+                        );
+                        let ui = &mut ui;
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui::section(ui, "Theme");
+                                let mut v = self.settings.match_tesseract;
+                                if ui::toggle_row(
+                                    ui,
+                                    "Match Tesseract",
+                                    if tess {
+                                        "Take theme, glass and motion from Tesseract, live."
+                                    } else {
+                                        "Tesseract has not been run on this machine yet."
+                                    },
+                                    &mut v,
+                                ) {
+                                    self.settings.match_tesseract = v;
+                                    self.tess_seen = None;
+                                    self.tess_checked = None;
+                                }
+                                ui.add_space(4.0);
+                                let mut picked = None;
+                                for t in theme::ThemeId::ALL {
+                                    if theme_row(ui, t, self.settings.theme == t, !self.settings.light_mode) {
+                                        picked = Some(t);
+                                    }
+                                }
+                                if let Some(t) = picked {
+                                    self.settings.theme = t;
+                                    self.stop_matching();
+                                }
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    let dark = !self.settings.light_mode;
+                                    icons::show(ui, if dark { Icon::Moon } else { Icon::Sun }, 14.0, p.text_dim);
+                                    ui.label(
+                                        egui::RichText::new(if dark { "Dark" } else { "Light" })
+                                            .font(theme::font_med(theme::T_SM))
+                                            .color(p.text),
+                                    );
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let mut on = dark;
+                                        if ui::toggle(ui, &mut on) {
+                                            self.settings.light_mode = !on;
+                                            self.stop_matching();
+                                        }
+                                    });
+                                });
+
+                                ui::separator(ui);
+                                ui::section(ui, "Motion & glass");
+                                let mut v = self.settings.animations;
+                                if ui::toggle_row(ui, "Animations", "Every transition in the app, at once.", &mut v) {
+                                    self.settings.animations = v;
+                                    self.stop_matching();
+                                }
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new("Window blur")
+                                        .font(theme::font_med(theme::T_SM))
+                                        .color(p.text),
+                                );
+                                ui.horizontal(|ui| {
+                                    for m in BlurMode::ALL {
+                                        let on = self.settings.blur == m;
+                                        if ui::button(ui, m.label(), None, on) && !on {
+                                            self.settings.blur = m;
+                                            self.stop_matching();
+                                        }
+                                    }
+                                });
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} · {}",
+                                        blur::session_name(),
+                                        self.blur.state.describe()
+                                    ))
+                                    .font(theme::font(theme::T_MICRO))
+                                    .color(p.text_faint),
+                                );
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new("Glass")
+                                        .font(theme::font_med(theme::T_SM))
+                                        .color(p.text),
+                                );
+                                let mut g = self.settings.glass_opacity;
+                                if ui::slider(ui, &mut g, 0.35..=1.0) {
+                                    self.settings.glass_opacity = g;
+                                    self.stop_matching();
+                                }
+                                ui.add_space(6.0);
+                                ui.label(
+                                    egui::RichText::new(format!("Interface size · {:.0}%", self.settings.font_scale * 100.0))
+                                        .font(theme::font_med(theme::T_SM))
+                                        .color(p.text),
+                                );
+                                let mut fs = self.settings.font_scale;
+                                if ui::slider(ui, &mut fs, 0.8..=1.4) {
+                                    self.settings.font_scale = (fs * 20.0).round() / 20.0;
+                                }
+
+                                ui::separator(ui);
+                                ui::section(ui, "The page");
+                                ui.label(
+                                    egui::RichText::new(format!("Page text · {:.0} pt · Ctrl+plus / minus", self.settings.page_px))
+                                        .font(theme::font_med(theme::T_SM))
+                                        .color(p.text),
+                                );
+                                let mut px = self.settings.page_px;
+                                if ui::slider(ui, &mut px, 11.0..=26.0) {
+                                    self.settings.page_px = px.round();
+                                }
+                                ui.add_space(4.0);
+                                let mut v = self.settings.page_breaks;
+                                if ui::toggle_row(ui, "Page breaks", "Where each printed page begins, as you write.", &mut v) {
+                                    self.settings.page_breaks = v;
+                                }
+                                let mut v = self.settings.scene_numbers;
+                                if ui::toggle_row(ui, "Scene numbers", "In the gutter, the navigator and the PDF.", &mut v) {
+                                    self.settings.scene_numbers = v;
+                                }
+                                let mut v = self.settings.smart_type;
+                                if ui::toggle_row(ui, "SmartType", "Finish names, places and transitions. Tab takes it.", &mut v) {
+                                    self.settings.smart_type = v;
+                                }
+                                let mut v = self.settings.typewriter;
+                                if ui::toggle_row(ui, "Typewriter scrolling", "Keep the line you are on mid-page.", &mut v) {
+                                    self.settings.typewriter = v;
+                                }
+
+                                ui::separator(ui);
+                                ui::section(ui, "Library");
+                                let mut v = self.settings.starred_first;
+                                if ui::toggle_row(ui, "Starred at the top", "", &mut v) {
+                                    self.settings.starred_first = v;
+                                }
+                                ui.label(
+                                    egui::RichText::new("Sort by")
+                                        .font(theme::font_med(theme::T_SM))
+                                        .color(p.text),
+                                );
+                                ui.horizontal_wrapped(|ui| {
+                                    for s in SortBy::ALL {
+                                        let on = self.settings.sort_by == s;
+                                        if ui::button(ui, s.label(), None, on) && !on {
+                                            self.settings.sort_by = s;
+                                        }
+                                    }
+                                });
+
+                                ui::separator(ui);
+                                ui::section(ui, "Writing");
+                                ui.label(
+                                    egui::RichText::new(if self.settings.session_goal == 0 {
+                                        "Session goal · off".to_string()
+                                    } else {
+                                        format!("Session goal · {} words", self.settings.session_goal)
+                                    })
+                                    .font(theme::font_med(theme::T_SM))
+                                    .color(p.text),
+                                );
+                                let mut g = self.settings.session_goal as f32;
+                                if ui::slider(ui, &mut g, 0.0..=3000.0) {
+                                    self.settings.session_goal = ((g / 50.0).round() * 50.0) as u32;
+                                }
+
+                                ui::separator(ui);
+                                ui::section(ui, "Starting up & saving");
+                                let mut v = self.settings.splash;
+                                if ui::toggle_row(ui, "Splash screen", "", &mut v) {
+                                    self.settings.splash = v;
+                                }
+                                ui.label(
+                                    egui::RichText::new("After Quick Export")
+                                        .font(theme::font_med(theme::T_SM))
+                                        .color(p.text),
+                                );
+                                ui.horizontal(|ui| {
+                                    for a in AfterExport::ALL {
+                                        let on = self.settings.after_export == a;
+                                        if ui::button(ui, a.label(), None, on) && !on {
+                                            self.settings.after_export = a;
+                                        }
+                                    }
+                                });
+                                ui.add_space(4.0);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Autosave after {} ms of quiet",
+                                        self.settings.autosave_ms
+                                    ))
+                                    .font(theme::font_med(theme::T_SM))
+                                    .color(p.text),
+                                );
+                                let mut ms = self.settings.autosave_ms as f32;
+                                if ui::slider(ui, &mut ms, 200.0..=5000.0) {
+                                    self.settings.autosave_ms = (ms / 50.0).round() as u64 * 50;
+                                }
+
+                                ui::separator(ui);
+                                ui::section(ui, "Where things live");
+                                ui.label(
+                                    egui::RichText::new(short_home(&storage::scripts_dir()))
+                                        .font(theme::font_mono(theme::T_MICRO))
+                                        .color(p.text_faint),
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui::button(ui, "Open library", Some(Icon::Folder), false) {
+                                        storage::open_with_desktop(&storage::scripts_dir());
+                                    }
+                                    if ui::button(ui, "Exports", Some(Icon::Download), false) {
+                                        storage::open_with_desktop(&storage::exports_dir());
+                                    }
+                                });
+                                ui.add_space(8.0);
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Page font: {} · Northstar {} · Starforge Software",
+                                        theme::PAGE_FONT_NAME,
+                                        env!("CARGO_PKG_VERSION")
+                                    ))
+                                    .font(theme::font(theme::T_MICRO))
+                                    .color(p.text_faint),
+                                );
+                            });
+                    });
+            })
+            .response;
+
+        if self.settings != before {
+            self.ed.font_px = self.settings.page_px;
+            self.theme_dirty = true;
+            self.save_settings();
+        }
+        self.close_popover_if_outside(ctx, &[area.rect, self.settings_button_rect]);
+    }
+
+    /// A look chosen by hand here stops the look being taken from Tesseract.
+    fn stop_matching(&mut self) {
+        if self.settings.match_tesseract && storage::tesseract_settings_path().exists() {
+            self.settings.match_tesseract = false;
+            self.deck.say(
+                "No longer matching Tesseract",
+                "Turn Match Tesseract back on in Settings to follow it again.",
+                Tone::Info,
+            );
+        }
+    }
+
+    // ---------- keys ----------
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        let hit = |ctx: &egui::Context, m: Modifiers, k: Key| {
-            ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)))
-        };
+        use egui::{Key, KeyboardShortcut, Modifiers};
+        let hit =
+            |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
 
-        if hit(ctx, Modifiers::COMMAND, Key::S) {
+        if hit(Modifiers::COMMAND, Key::S) {
             self.save(true);
-            self.toast("Saved".to_string(), false);
+            self.deck.ok("Saved", "");
         }
-        if hit(ctx, Modifiers::COMMAND, Key::N) {
+        if hit(Modifiers::COMMAND, Key::N) {
             self.new_script();
         }
-        if hit(ctx, Modifiers::COMMAND, Key::Z) {
-            self.undo();
-        }
-        if hit(ctx, Modifiers::COMMAND | Modifiers::SHIFT, Key::Z)
-            || hit(ctx, Modifiers::COMMAND, Key::Y)
-        {
+        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || hit(Modifiers::COMMAND, Key::Y) {
             self.redo();
         }
-        if hit(ctx, Modifiers::COMMAND, Key::B) {
-            self.show_library = !self.show_library;
+        if hit(Modifiers::COMMAND, Key::Z) {
+            self.undo();
         }
-        if hit(ctx, Modifiers::COMMAND, Key::I) {
-            self.show_details = !self.show_details;
+        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::F) {
+            self.settings.show_library = true;
+            self.focus_search = true;
+        } else if hit(Modifiers::COMMAND, Key::F) || hit(Modifiers::COMMAND, Key::H) {
+            self.mode = Mode::Write;
+            self.find.open = true;
+            self.find.focus = true;
         }
-        if hit(ctx, Modifiers::COMMAND, Key::E) {
-            self.do_export(Format::Pdf);
+        if hit(Modifiers::COMMAND, Key::B) {
+            self.settings.show_library = !self.settings.show_library;
+            self.save_settings();
         }
-        if hit(ctx, Modifiers::COMMAND, Key::Plus) || hit(ctx, Modifiers::COMMAND, Key::Equals) {
-            self.ed.font_px = (self.ed.font_px + 1.0).min(26.0);
+        if hit(Modifiers::COMMAND, Key::I) {
+            self.settings.show_scenes = !self.settings.show_scenes;
+            self.save_settings();
         }
-        if hit(ctx, Modifiers::COMMAND, Key::Minus) {
-            self.ed.font_px = (self.ed.font_px - 1.0).max(11.0);
+        if hit(Modifiers::COMMAND, Key::E) {
+            self.export(Format::Pdf, true);
+        }
+        if hit(Modifiers::COMMAND, Key::Comma) {
+            self.toggle_popover(Popover::Settings);
+        }
+        if hit(Modifiers::COMMAND, Key::Period) {
+            self.focus_mode = !self.focus_mode;
+        }
+        if hit(Modifiers::COMMAND, Key::G) {
+            self.mode = Mode::from_index((self.mode.index() + 1) % 3);
+        }
+        if hit(Modifiers::COMMAND, Key::Enter) {
+            self.new_scene();
+        }
+        let mut px = None;
+        if hit(Modifiers::COMMAND, Key::Plus) || hit(Modifiers::COMMAND, Key::Equals) {
+            px = Some((self.ed.font_px + 1.0).min(26.0));
+        }
+        if hit(Modifiers::COMMAND, Key::Minus) {
+            px = Some((self.ed.font_px - 1.0).max(11.0));
+        }
+        if let Some(px) = px {
+            self.ed.font_px = px;
+            self.settings.page_px = px;
+            self.save_settings();
         }
 
         const DIGITS: [Key; 7] = [
@@ -369,7 +2892,7 @@ impl App {
             Key::Num7,
         ];
         for (i, k) in DIGITS.iter().enumerate() {
-            if hit(ctx, Modifiers::COMMAND, *k) {
+            if hit(Modifiers::COMMAND, *k) {
                 if let Some(e) = Element::from_digit(i + 1) {
                     if editor::set_element(&mut self.doc, &mut self.ed, e) {
                         self.mark_changed();
@@ -377,529 +2900,585 @@ impl App {
                 }
             }
         }
-    }
 
-    // ---------- panels ----------
-
-    fn top_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("topbar")
-            .exact_height(58.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::RAIL)
-                    .inner_margin(egui::Margin::symmetric(12.0, 10.0))
-                    .stroke(Stroke::NONE),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    if ghost_button(ui, if self.show_library { "‹ Library" } else { "Library" })
-                        .clicked()
-                    {
-                        self.show_library = !self.show_library;
-                    }
-
-                    ui.add_space(6.0);
-                    let title = if self.doc.meta.title.trim().is_empty() {
-                        "Untitled Script".to_string()
-                    } else {
-                        self.doc.meta.title.clone()
-                    };
-                    ui.label(
-                        egui::RichText::new(title)
-                            .size(15.0)
-                            .color(theme::TEXT)
-                            .strong(),
-                    );
-                    if self.dirty {
-                        ui.label(egui::RichText::new("•").size(18.0).color(theme::RED));
-                    }
-
-                    ui.add_space(14.0);
-                    let current = self.ed.current_element(&self.doc);
-                    let mut wanted: Option<Element> = None;
-                    for e in Element::ALL {
-                        if element_pill(ui, e, current == Some(e)).clicked() {
-                            wanted = Some(e);
-                        }
-                    }
-                    if let Some(e) = wanted {
-                        if editor::set_element(&mut self.doc, &mut self.ed, e) {
-                            self.mark_changed();
-                        }
-                    }
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ghost_button(ui, if self.show_details { "Details ›" } else { "Details" })
-                            .clicked()
-                        {
-                            self.show_details = !self.show_details;
-                        }
-                        ui.menu_button("Export", |ui| {
-                            ui.set_min_width(150.0);
-                            for f in [Format::Pdf, Format::Text, Format::Fountain] {
-                                if ui.button(f.label()).clicked() {
-                                    self.do_export(f);
-                                    ui.close_menu();
-                                }
-                            }
-                            ui.separator();
-                            if ui.button("Open exports folder").clicked() {
-                                storage::open_with_desktop(&storage::exports_dir());
-                                ui.close_menu();
-                            }
-                        });
-                        if accent_button(ui, "New").clicked() {
-                            self.new_script();
-                        }
-                    });
-                });
-            });
-    }
-
-    fn library_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::left("library")
-            .exact_width(276.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::RAIL)
-                    .inner_margin(egui::Margin::symmetric(12.0, 12.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("LIBRARY")
-                            .size(10.5)
-                            .color(theme::TEXT_FAINT),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("+").size(15.0).color(theme::RED_HOT),
-                                )
-                                .fill(theme::SURFACE)
-                                .rounding(egui::Rounding::same(8.0))
-                                .min_size(egui::vec2(28.0, 24.0)),
-                            )
-                            .on_hover_text("New script (Ctrl+N)")
-                            .clicked()
-                        {
-                            self.new_script();
-                        }
-                    });
-                });
-                ui.add_space(8.0);
-
-                let search = egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("Search")
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::Margin::symmetric(10.0, 7.0));
-                ui.add(search);
-                ui.add_space(10.0);
-
-                let needle = self.search.to_lowercase();
-                let entries = self.entries.clone();
-                let mut to_open: Option<PathBuf> = None;
-                let mut to_duplicate: Option<PathBuf> = None;
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        for entry in &entries {
-                            if !needle.is_empty()
-                                && !entry.title.to_lowercase().contains(&needle)
-                                && !entry.preview.to_lowercase().contains(&needle)
-                            {
-                                continue;
-                            }
-                            let selected = self.path.as_deref() == Some(entry.path.as_path());
-                            let resp = library_row(ui, entry, selected);
-                            if resp.clicked() && !selected {
-                                to_open = Some(entry.path.clone());
-                            }
-                            resp.context_menu(|ui| {
-                                if ui.button("Duplicate").clicked() {
-                                    to_duplicate = Some(entry.path.clone());
-                                    ui.close_menu();
-                                }
-                                if ui.button("Show file").clicked() {
-                                    storage::open_with_desktop(&storage::scripts_dir());
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui
-                                    .button(egui::RichText::new("Delete").color(theme::RED_HOT))
-                                    .clicked()
-                                {
-                                    self.confirm_delete = Some(entry.path.clone());
-                                    ui.close_menu();
-                                }
-                            });
-                            ui.add_space(6.0);
-                        }
-                    });
-
-                if let Some(p) = to_open {
-                    self.open(p);
-                }
-                if let Some(p) = to_duplicate {
-                    self.duplicate(&p);
-                }
-            });
-    }
-
-    fn details_panel(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("details")
-            .exact_width(292.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::RAIL)
-                    .inner_margin(egui::Margin::symmetric(14.0, 14.0)),
-            )
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false; 2])
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new("TITLE PAGE")
-                                .size(10.5)
-                                .color(theme::TEXT_FAINT),
-                        );
-                        ui.add_space(8.0);
-
-                        let mut edited = false;
-                        edited |= field(ui, "Title", &mut self.doc.meta.title);
-                        edited |= field(ui, "Written by", &mut self.doc.meta.author);
-                        edited |= field(ui, "Draft", &mut self.doc.meta.draft);
-                        edited |= field(ui, "Contact", &mut self.doc.meta.contact);
-                        if edited {
-                            self.mark_changed();
-                        }
-
-                        ui.add_space(16.0);
-                        ui.label(
-                            egui::RichText::new("SCENES")
-                                .size(10.5)
-                                .color(theme::TEXT_FAINT),
-                        );
-                        ui.add_space(6.0);
-
-                        let outline = self.doc.outline();
-                        if outline.is_empty() {
-                            ui.label(
-                                egui::RichText::new("No scene headings yet.")
-                                    .size(12.0)
-                                    .color(theme::TEXT_FAINT),
-                            );
-                        }
-                        let mut jump: Option<u64> = None;
-                        for (n, (id, text)) in outline.iter().enumerate() {
-                            let label = if text.trim().is_empty() {
-                                format!("{}.  (untitled scene)", n + 1)
-                            } else {
-                                format!("{}.  {}", n + 1, text)
-                            };
-                            let resp = ui.add(
-                                egui::Button::new(
-                                    egui::RichText::new(truncate(&label, 34))
-                                        .size(12.0)
-                                        .color(theme::TEXT_DIM),
-                                )
-                                .fill(egui::Color32::TRANSPARENT)
-                                .stroke(Stroke::NONE)
-                                .min_size(egui::vec2(ui.available_width(), 22.0)),
-                            );
-                            if resp.clicked() {
-                                jump = Some(*id);
-                            }
-                        }
-                        if let Some(id) = jump {
-                            self.ed.jump_to(id);
-                        }
-
-                        ui.add_space(16.0);
-                        ui.label(
-                            egui::RichText::new("LIBRARY FOLDER")
-                                .size(10.5)
-                                .color(theme::TEXT_FAINT),
-                        );
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(storage::scripts_dir().display().to_string())
-                                .size(11.0)
-                                .color(theme::TEXT_DIM),
-                        );
-                        ui.add_space(6.0);
-                        if ghost_button(ui, "Open in file manager").clicked() {
-                            storage::open_with_desktop(&storage::scripts_dir());
-                        }
-
-                        if let Some(font) = &self.mono_font {
-                            ui.add_space(14.0);
-                            ui.label(
-                                egui::RichText::new(format!("Page font: {font}"))
-                                    .size(10.5)
-                                    .color(theme::TEXT_FAINT),
-                            );
-                        }
-                    });
-            });
-    }
-
-    fn status_bar(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::bottom("status")
-            .exact_height(30.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(theme::RAIL)
-                    .inner_margin(egui::Margin::symmetric(14.0, 6.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal_centered(|ui| {
-                    let s = self.stats;
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} pg   ·   ~{} min   ·   {} scenes   ·   {} words",
-                            s.pages, s.pages, s.scenes, s.words
-                        ))
-                        .size(11.5)
-                        .color(theme::TEXT_DIM),
-                    );
-
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let (label, color) = if self.dirty {
-                            ("unsaved", theme::RED_HOT)
-                        } else if self.saved_at.is_some() {
-                            ("saved", theme::TEXT_FAINT)
-                        } else {
-                            ("", theme::TEXT_FAINT)
-                        };
-                        ui.label(egui::RichText::new(label).size(11.5).color(color));
-
-                        if let Some((msg, error, at)) = self.status.clone() {
-                            if at.elapsed() < STATUS_TTL {
-                                ui.add_space(14.0);
-                                ui.label(
-                                    egui::RichText::new(msg)
-                                        .size(11.5)
-                                        .color(if error { theme::RED_HOT } else { theme::TEXT_DIM }),
-                                );
-                            } else {
-                                self.status = None;
-                            }
-                        }
-                    });
-                });
-            });
-    }
-
-    fn delete_dialog(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.confirm_delete.clone() else {
-            return;
-        };
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("this script")
-            .to_string();
-
-        let mut open = true;
-        egui::Window::new("Delete script")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                ui.label(
-                    egui::RichText::new(format!("Delete {name}? This cannot be undone."))
-                        .size(13.0),
-                );
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Delete").color(egui::Color32::WHITE),
-                            )
-                            .fill(theme::RED)
-                            .rounding(egui::Rounding::same(theme::R_CTRL)),
-                        )
-                        .clicked()
-                    {
-                        self.delete(&path);
-                        self.confirm_delete = None;
-                    }
-                    if ghost_button(ui, "Cancel").clicked() {
-                        self.confirm_delete = None;
-                    }
-                });
-            });
-        if !open {
-            self.confirm_delete = None;
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            if self.popover.is_some() {
+                self.popover = None;
+            } else if self.find.open {
+                self.find.open = false;
+            } else if self.focus_mode {
+                self.focus_mode = false;
+            }
         }
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.shortcuts(ctx);
-        self.refresh_stats();
+    // ---------- the frame ----------
 
-        self.top_bar(ctx);
-        self.status_bar(ctx);
-        if self.show_library {
-            self.library_panel(ctx);
+    pub fn frame(&mut self, ctx: &egui::Context) {
+        self.frame_no = self.frame_no.wrapping_add(1);
+
+        self.follow_tesseract();
+        self.watch_library();
+        if self.theme_dirty {
+            theme::set_palette(self.settings.theme, !self.settings.light_mode);
+            anim::set_enabled(self.settings.animations);
+            self.sync_glass();
+            theme::apply(ctx);
+            ctx.set_zoom_factor(self.settings.font_scale);
+            self.theme_dirty = false;
         }
-        if self.show_details {
-            self.details_panel(ctx);
-        }
 
-        let mut changed = false;
+        // The ground the islands sit on, painted straight onto the background
+        // layer: a second CentralPanel would fight the real one.
+        chrome::backdrop(ctx, self.window_ground());
+        // keep the compositor's blurred area cut to the window's own outline
         {
-            let doc = &mut self.doc;
-            let ed = &mut self.ed;
-            egui::CentralPanel::default()
-                .frame(egui::Frame::none().fill(theme::BG))
-                .show(ctx, |ui| {
-                    changed = editor::show(ui, doc, ed);
-                });
-        }
-        if changed {
-            self.mark_changed();
+            let ppp = ctx.pixels_per_point();
+            let size = ctx.screen_rect().size() * ppp;
+            let radius = if chrome::maximized(ctx) { 0.0 } else { theme::R_WINDOW * ppp };
+            self.blur.reshape(size.x as u32, size.y as u32, radius as u32);
         }
 
-        self.delete_dialog(ctx);
+        if !self.deck.asking() {
+            self.shortcuts(ctx);
+        }
+
+        // files dropped on the window, or handed over on the command line: a
+        // script already in the library is opened, anything else imported
+        let mut dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        dropped.append(&mut self.arrivals);
+        for path in dropped {
+            let in_library = path
+                .canonicalize()
+                .ok()
+                .zip(storage::scripts_dir().canonicalize().ok())
+                .map(|(f, lib)| f.starts_with(lib))
+                .unwrap_or(false);
+            if in_library {
+                self.open(path);
+            } else {
+                self.import_path(&path);
+            }
+        }
+        if let Some(rx) = &self.importing {
+            match rx.try_recv() {
+                Ok(Ok(Some(path))) => {
+                    self.importing = None;
+                    self.import_path(&path);
+                }
+                Ok(Ok(None)) => self.importing = None,
+                Ok(Err(e)) => {
+                    self.importing = None;
+                    self.deck.warn("No file picker", &e);
+                }
+                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(200)),
+                Err(mpsc::TryRecvError::Disconnected) => self.importing = None,
+            }
+        }
+
+        // the centre page eases in whenever it changes what it is showing
+        let key = format!(
+            "{:?}|{}",
+            self.mode,
+            self.path.as_ref().map(|x| x.display().to_string()).unwrap_or_default()
+        );
+        if key != self.page_key {
+            self.page_key = key;
+            self.page_born = Instant::now();
+        }
+
+        self.refresh_layout(false);
+
+        self.top_panel(ctx);
+        self.browser(ctx);
+        self.aside(ctx);
+        self.page(ctx);
+        self.find_bar(ctx);
+        self.popovers(ctx);
+        chrome::resize_handles(ctx);
+
+        if let Some(answer) = self.deck.show(ctx) {
+            self.answer(answer);
+        }
+
+        if let Some(splash) = self.splash.as_mut() {
+            if splash.show(ctx) {
+                if self.frame_no < 3 {
+                    crate::splash::centre(ctx, crate::splash::CARD);
+                }
+            } else {
+                self.splash = None;
+                let full = Vec2::new(1320.0, 900.0);
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(880.0, 580.0)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(full));
+                crate::splash::centre(ctx, full);
+            }
+        }
 
         // undo checkpoints and autosave, both keyed off a pause in typing
         if let Some(last) = self.last_change {
             if self.snapshot_due && last.elapsed() > SNAPSHOT_IDLE {
                 self.snapshot_now();
             }
-            if self.dirty && last.elapsed() > AUTOSAVE_IDLE {
+            if self.dirty && last.elapsed() > Duration::from_millis(self.settings.autosave_ms) {
                 self.save(false);
             }
         }
-
         if ctx.input(|i| i.viewport().close_requested()) {
             self.save(true);
         }
-
-        ctx.request_repaint_after(Duration::from_millis(400));
+        ctx.request_repaint_after(Duration::from_millis(500));
     }
 }
 
-// ---------- small widgets ----------
-
-fn ghost_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(egui::RichText::new(text).size(12.5).color(theme::TEXT_DIM))
-            .fill(theme::SURFACE)
-            .stroke(Stroke::new(1.0, theme::LINE))
-            .rounding(egui::Rounding::same(theme::R_CTRL)),
-    )
+/// The seam the headless UI tests drive the app through. Everything here reads
+/// or nudges state the real UI reaches by other means.
+#[allow(dead_code)]
+impl App {
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+    pub fn set_mode(&mut self, m: Mode) {
+        self.mode = m;
+    }
+    pub fn doc(&self) -> &Document {
+        &self.doc
+    }
+    pub fn doc_mut(&mut self) -> &mut Document {
+        self.mark_changed();
+        &mut self.doc
+    }
+    pub fn path(&self) -> Option<PathBuf> {
+        self.path.clone()
+    }
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+    pub fn settings(&self) -> &Settings {
+        &self.settings
+    }
+    pub fn focus_block(&self) -> Option<u64> {
+        self.ed.focus_block
+    }
+    pub fn focus_on(&mut self, id: u64) {
+        self.ed.focus(id, Caret::End);
+    }
+    pub fn debug_pending_ask(&self) -> bool {
+        self.deck.asking()
+    }
+    pub fn debug_answer_yes(&mut self, text: Option<&str>) {
+        if let Some(a) = self.deck.take_top(text.map(|s| s.to_string())) {
+            self.answer(a);
+        }
+    }
+    pub fn debug_popover_open(&self) -> bool {
+        self.popover.is_some()
+    }
+    pub fn debug_settings_open(&self) -> bool {
+        self.popover == Some(Popover::Settings)
+    }
+    pub fn debug_menu_button(&self) -> Rect {
+        self.menu_button_rect
+    }
+    pub fn debug_settings_button(&self) -> Rect {
+        self.settings_button_rect
+    }
+    pub fn debug_menu_item(&self, n: usize) -> Option<Rect> {
+        self.menu_item_rects.get(n).copied()
+    }
+    pub fn debug_card_rect(&self, n: usize) -> Option<Rect> {
+        self.cards.last_rects.get(n).copied()
+    }
+    pub fn debug_sheet_count(&self) -> usize {
+        self.pages.last_rects.len()
+    }
+    pub fn debug_page_rect(&self) -> Rect {
+        self.page_rect
+    }
+    pub fn debug_find_open(&self) -> bool {
+        self.find.open
+    }
+    pub fn debug_set_find(&mut self, needle: &str, with: &str) {
+        self.find.open = true;
+        self.find.needle = needle.to_string();
+        self.find.with = with.to_string();
+    }
+    pub fn debug_import(&mut self, path: &Path) {
+        self.import_path(path);
+    }
+    pub fn debug_open(&mut self, path: PathBuf) {
+        self.open(path);
+    }
+    pub fn debug_save(&mut self) {
+        self.save(true);
+    }
+    pub fn debug_undo(&mut self) {
+        self.undo();
+    }
+    pub fn debug_snapshot(&mut self) {
+        self.take_snapshot();
+    }
+    pub fn debug_ask_delete_scene(&mut self, n: usize) {
+        self.ask_delete_scene(n);
+    }
+    pub fn debug_ask_restore(&mut self, s: &storage::Snapshot) {
+        self.ask_restore(s);
+    }
+    pub fn debug_page_starts(&mut self) -> Vec<(u64, usize)> {
+        self.layout_stale = true;
+        self.refresh_layout(true);
+        self.layout.page_starts.iter().map(|(a, b)| (*a, *b)).collect()
+    }
+    pub fn debug_set_theme(&mut self, t: theme::ThemeId, light: bool) {
+        self.settings.theme = t;
+        self.settings.light_mode = light;
+        self.settings.match_tesseract = false;
+        self.theme_dirty = true;
+    }
+    pub fn debug_focus_mode(&mut self, on: bool) {
+        self.focus_mode = on;
+    }
+    pub fn debug_row_rect(&self, path: &Path) -> Option<Rect> {
+        self.rail.last_rects.get(path).copied()
+    }
+    pub fn debug_session_words(&self) -> i64 {
+        self.session_words
+    }
 }
 
-fn accent_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add(
-        egui::Button::new(
-            egui::RichText::new(text)
-                .size(12.5)
-                .color(egui::Color32::WHITE)
-                .strong(),
-        )
-        .fill(theme::RED)
-        .stroke(Stroke::new(1.0, theme::RED_HOT))
-        .rounding(egui::Rounding::same(theme::R_CTRL)),
-    )
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.frame(ctx);
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        // Always transparent. The ground is painted by `chrome::backdrop` as a
+        // rounded rectangle — clear to an opaque colour instead and the window
+        // gets square corners, whatever we draw on top of it.
+        [0.0, 0.0, 0.0, 0.0]
+    }
 }
 
-fn element_pill(ui: &mut egui::Ui, e: Element, selected: bool) -> egui::Response {
-    let color = theme::element_color(e);
-    let (fill, stroke, text_color) = if selected {
-        (theme::RED_WASH, Stroke::new(1.0, color), color)
-    } else {
-        (theme::SURFACE, Stroke::new(1.0, theme::LINE), theme::TEXT_DIM)
-    };
-    ui.add(
-        egui::Button::new(egui::RichText::new(e.short()).size(10.5).color(text_color))
-            .fill(fill)
-            .stroke(stroke)
-            .rounding(egui::Rounding::same(theme::R_PILL))
-            .min_size(egui::vec2(0.0, 26.0)),
-    )
-    .on_hover_text(format!(
-        "{}  (Ctrl+{})",
-        e.label(),
-        Element::ALL.iter().position(|x| *x == e).unwrap_or(0) + 1
-    ))
-}
+// ---------- small pieces ----------
 
-fn field(ui: &mut egui::Ui, label: &str, value: &mut String) -> bool {
-    ui.label(egui::RichText::new(label).size(11.0).color(theme::TEXT_FAINT));
-    ui.add_space(2.0);
-    let r = ui.add(
-        egui::TextEdit::singleline(value)
-            .desired_width(f32::INFINITY)
-            .margin(egui::Margin::symmetric(10.0, 7.0)),
+/// The one button that should catch your eye when the app opens.
+fn new_script_button(ui: &mut egui::Ui, width: f32) -> bool {
+    let p = pal();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.16);
+
+    if hot > 0.02 {
+        // on hover it takes the stars' own gradient and glows with it
+        theme::glow_rect(ui.painter(), rect, theme::R_CTRL, p.sec, 14.0, hot);
+    }
+    theme::grad_rect(
+        ui.painter(),
+        rect,
+        theme::R_CTRL,
+        theme::mix(p.prim_grad.1, p.sec_grad.1, hot),
+        theme::mix(p.prim_grad.0, p.sec_grad.0, hot),
+        Vec2::new(0.25, 1.0),
     );
-    ui.add_space(10.0);
-    r.changed()
-}
+    ui.painter().rect_stroke(
+        rect,
+        egui::Rounding::same(theme::R_CTRL),
+        Stroke::new(1.0_f32, theme::wash(theme::lighten(p.sec_light, 0.2), (200.0 * hot) as u8)),
+    );
 
-fn library_row(ui: &mut egui::Ui, entry: &Entry, selected: bool) -> egui::Response {
-    let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 58.0), Sense::click());
-
-    let fill = if selected {
-        theme::RED_WASH
-    } else if resp.hovered() {
-        theme::SURFACE_HI
-    } else {
-        theme::SURFACE
-    };
-    let stroke = if selected {
-        Stroke::new(1.0, theme::RED)
-    } else {
-        Stroke::new(1.0, theme::LINE)
-    };
-    let painter = ui.painter();
-    painter.rect(rect, egui::Rounding::same(12.0), fill, stroke);
-
-    let pad = 12.0;
-    painter.text(
-        egui::pos2(rect.left() + pad, rect.top() + 14.0),
+    let ink = theme::on(theme::mix(p.prim_grad.0, p.sec_grad.0, hot));
+    icons::draw(
+        ui.painter(),
+        Rect::from_center_size(
+            Pos2::new(rect.center().x - 40.0, rect.center().y),
+            Vec2::splat(13.0),
+        ),
+        Icon::Plus,
+        ink,
+    );
+    ui.painter().text(
+        Pos2::new(rect.center().x - 28.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        truncate(&entry.title, 26),
-        egui::FontId::proportional(13.0),
-        if selected { theme::TEXT } else { theme::TEXT },
+        "New script",
+        theme::font_semi(theme::T_SM),
+        ink,
     );
-    painter.text(
-        egui::pos2(rect.left() + pad, rect.top() + 33.0),
+    resp.on_hover_text("New script  ·  Ctrl+N").clicked()
+}
+
+/// One element in the ribbon's palette. Nothing until you reach for it; the
+/// element the caret is in stands lit.
+fn element_chip(ui: &mut egui::Ui, e: Element, on: bool) -> bool {
+    let p = pal();
+    let galley = ui.painter().layout_no_wrap(
+        e.short().to_string(),
+        theme::font_med(theme::T_LABEL - 1.0),
+        p.text_dim,
+    );
+    let w = galley.rect.width() + 26.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    theme::hover_surface(ui.painter(), rect, theme::R_SM, p.primary, hot, on);
+    let dot = theme::element_color(e);
+    ui.painter().circle_filled(
+        Pos2::new(rect.left() + 10.0, rect.center().y),
+        2.4,
+        theme::wash(dot, if on { 255 } else { (140.0 + 100.0 * hot) as u8 }),
+    );
+    let ink = if on {
+        p.primary_light
+    } else {
+        theme::mix(p.text_dim, p.text, hot)
+    };
+    ui.painter().galley(
+        Pos2::new(rect.left() + 17.0, rect.center().y - galley.rect.height() * 0.5),
+        galley,
+        ink,
+    );
+    let k = Element::ALL.iter().position(|x| *x == e).unwrap_or(0) + 1;
+    resp.on_hover_text(format!("{}  ·  Ctrl+{k}", e.label())).clicked()
+}
+
+/// How far a script sits in from the header of the section it is under.
+const INDENT: f32 = 20.0;
+
+fn row_id(path: &Path) -> egui::Id {
+    egui::Id::new(("ns-script-row", path.display().to_string()))
+}
+
+struct HeaderOut {
+    rect: Rect,
+    clicked: bool,
+}
+
+/// A section heading in the library: the starred set, and everything.
+fn section_header(
+    ui: &mut egui::Ui,
+    label: &str,
+    icon: Icon,
+    count: usize,
+    collapsed: &mut bool,
+    tint: Option<Color32>,
+) -> HeaderOut {
+    let p = pal();
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 28.0), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.12);
+    let col = tint.unwrap_or(p.text_dim);
+    if hot > 0.02 {
+        ui.painter().rect_filled(
+            rect,
+            egui::Rounding::same(theme::R_SM),
+            theme::wash(col, (26.0 * hot) as u8),
+        );
+    }
+    let turn = anim::to(ui.ctx(), resp.id.with("turn"), if *collapsed { 0.0 } else { 1.0 }, 0.14);
+    icons::draw(
+        ui.painter(),
+        Rect::from_center_size(Pos2::new(rect.left() + 11.0, rect.center().y), Vec2::splat(11.0)),
+        if turn > 0.5 { Icon::ChevronDown } else { Icon::ChevronRight },
+        p.text_faint,
+    );
+    icons::draw(
+        ui.painter(),
+        Rect::from_center_size(Pos2::new(rect.left() + 28.0, rect.center().y), Vec2::splat(13.0)),
+        icon,
+        col,
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + 42.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        truncate(&entry.preview, 32),
-        egui::FontId::proportional(11.0),
-        theme::TEXT_FAINT,
+        ui::elide(label, ((rect.width() - 96.0) / 6.6) as usize),
+        theme::font_semi(theme::T_SM),
+        theme::mix(p.text_dim, p.text, hot),
     );
-    painter.text(
-        egui::pos2(rect.right() - pad, rect.bottom() - 12.0),
+    ui.painter().text(
+        Pos2::new(rect.right() - 13.0, rect.center().y),
         egui::Align2::RIGHT_CENTER,
-        relative_time(entry.modified),
-        egui::FontId::proportional(10.5),
-        theme::TEXT_FAINT,
+        format!("{count}"),
+        theme::font_mono(theme::T_MICRO),
+        p.text_faint,
     );
-    resp
+    let clicked = resp.clicked();
+    if clicked {
+        *collapsed = !*collapsed;
+    }
+    ui.add_space(3.0);
+    HeaderOut { rect, clicked }
 }
 
-fn truncate(s: &str, max: usize) -> String {
-    let n = s.chars().count();
-    if n <= max {
-        s.to_string()
-    } else {
-        let head: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{head}…")
+/// The line that ties a section's header to the scripts under it.
+fn draw_branch(ui: &egui::Ui, slot: egui::layers::ShapeIdx, head: Rect, kids: &[Rect], tint: Color32) {
+    if kids.is_empty() {
+        return;
+    }
+    let col = theme::wash(tint, 70);
+    let x = head.left() + 13.0;
+    let last = kids[kids.len() - 1];
+    let mut shapes: Vec<egui::Shape> = vec![egui::Shape::line_segment(
+        [
+            Pos2::new(x, head.bottom() + 1.0),
+            Pos2::new(x, last.center().y),
+        ],
+        Stroke::new(1.0_f32, col),
+    )];
+    for r in kids {
+        shapes.push(egui::Shape::line_segment(
+            [Pos2::new(x, r.center().y), Pos2::new(r.left() - 4.0, r.center().y)],
+            Stroke::new(1.0_f32, col),
+        ));
+    }
+    ui.painter().set(slot, egui::Shape::Vec(shapes));
+}
+
+/// One theme in the Settings list, with a live sample of its two gradients —
+/// the same row Tesseract shows, with the star standing in for the rhombus.
+fn theme_row(ui: &mut egui::Ui, t: theme::ThemeId, on: bool, dark: bool) -> bool {
+    let p = pal();
+    let sample = theme::palette(t, dark);
+    let w = ui.available_width();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered() || on, 0.14);
+
+    ui.painter().rect_filled(
+        rect,
+        egui::Rounding::same(theme::R_SM),
+        theme::mix(Color32::TRANSPARENT, sample.primary_quiet_hi, hot),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        egui::Rounding::same(theme::R_SM),
+        Stroke::new(
+            if on { 1.6_f32 } else { 1.0 },
+            if on { sample.primary } else { theme::wash(p.line, (200.0 * hot) as u8) },
+        ),
+    );
+
+    let sw = Rect::from_min_size(rect.left_top() + Vec2::new(8.0, 7.0), Vec2::new(34.0, 20.0));
+    theme::grad_rect(ui.painter(), sw, 6.0, sample.prim_grad.1, sample.prim_grad.0, Vec2::new(0.0, 1.0));
+    let dot = Pos2::new(sw.right() - 6.0, sw.bottom() - 6.0);
+    theme::glow_star(ui.painter(), dot, 6.0, sample.sec_grad.1, 11.0, 0.5);
+    theme::grad_star(ui.painter(), dot, 7.0, sample.sec_grad.0, sample.sec_grad.1);
+
+    ui.painter().text(
+        Pos2::new(rect.left() + 52.0, rect.center().y - 6.5),
+        egui::Align2::LEFT_CENTER,
+        t.name(),
+        theme::font_med(theme::T_SM),
+        p.text,
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + 52.0, rect.center().y + 7.5),
+        egui::Align2::LEFT_CENTER,
+        t.blurb(),
+        theme::font(theme::T_MICRO),
+        p.text_faint,
+    );
+    if on {
+        icons::draw(
+            ui.painter(),
+            Rect::from_center_size(Pos2::new(rect.right() - 16.0, rect.center().y), Vec2::splat(13.0)),
+            Icon::Check,
+            sample.primary,
+        );
+    }
+    ui.add_space(4.0);
+    resp.clicked()
+}
+
+/// A child of `ui` shifted down by however far the page still has to travel,
+/// clipped to the island so whatever is off the bottom is simply not there.
+fn slide_in(ui: &mut egui::Ui, island: Rect, arrive: f32, distance: f32) -> egui::Ui {
+    let dy = (1.0 - arrive) * distance;
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(island.translate(Vec2::new(0.0, dy)))
+            .layout(Layout::top_down(Align::Min)),
+    );
+    child.set_clip_rect(island.intersect(ui.clip_rect()));
+    child.set_opacity(0.08 + 0.92 * arrive);
+    child
+}
+
+/// How tall the band across the head of the script is.
+const BANNER_H: f32 = 86.0;
+
+/// The banner: a band of frosted glass across the whole page. Its top corners
+/// are the island's corners; only the faintest seam where it meets the page.
+fn banner_shape(rect: Rect) -> egui::Shape {
+    let p = pal();
+    let sheen = Color32::WHITE;
+    let round = egui::Rounding {
+        nw: theme::R_ISLAND,
+        ne: theme::R_ISLAND,
+        sw: 0.0,
+        se: 0.0,
+    };
+    let pts = {
+        let mut v = theme::rounded_poly(
+            Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.bottom() + theme::R_ISLAND)),
+            theme::R_ISLAND,
+        );
+        v.retain(|q| q.y <= rect.bottom());
+        v
+    };
+    egui::Shape::Vec(vec![
+        egui::Shape::rect_filled(rect, round, theme::glass_body(0.82)),
+        theme::grad_poly_shape(
+            &pts,
+            theme::wash(sheen, if p.dark { 18 } else { 120 }),
+            theme::wash(sheen, 0),
+            Vec2::new(0.0, 1.0),
+        ),
+        egui::Shape::line_segment(
+            [
+                rect.left_bottom() + Vec2::new(theme::R_ISLAND, 0.0),
+                rect.right_bottom() - Vec2::new(theme::R_ISLAND, 0.0),
+            ],
+            Stroke::new(1.0_f32, theme::wash(sheen, if p.dark { 8 } else { 22 })),
+        ),
+    ])
+}
+
+#[allow(dead_code)]
+fn empty_state(ui: &mut egui::Ui) {
+    let p = pal();
+    ui.vertical_centered(|ui| {
+        ui.add_space(150.0);
+        let (tile, _) = ui.allocate_exact_size(Vec2::splat(78.0), Sense::hover());
+        logo::paint(ui.painter(), tile, 0.3 * anim::breathe(ui.ctx(), 4.0));
+        ui.add_space(18.0);
+        ui.label(
+            egui::RichText::new("No script open")
+                .font(theme::font_semi(theme::T_H))
+                .color(p.text),
+        );
+    });
+}
+
+fn short_home(q: &Path) -> String {
+    let s = q.display().to_string();
+    match dirs::home_dir() {
+        Some(h) => {
+            let h = h.display().to_string();
+            if s.starts_with(&h) {
+                format!("~{}", &s[h.len()..])
+            } else {
+                s
+            }
+        }
+        None => s,
     }
 }
 
@@ -907,7 +3486,14 @@ fn relative_time(t: SystemTime) -> String {
     let Ok(d) = SystemTime::now().duration_since(t) else {
         return "now".to_string();
     };
-    let s = d.as_secs();
+    ago_secs(d.as_secs())
+}
+
+fn ago_instant(t: Instant) -> String {
+    ago_secs(t.elapsed().as_secs())
+}
+
+fn ago_secs(s: u64) -> String {
     if s < 90 {
         "just now".to_string()
     } else if s < 3600 {
@@ -919,7 +3505,7 @@ fn relative_time(t: SystemTime) -> String {
     }
 }
 
-fn today() -> String {
+pub fn today() -> String {
     chrono::Local::now().format("%B %e, %Y").to_string().replace("  ", " ")
 }
 
@@ -938,5 +3524,8 @@ fn starter_document() -> Document {
     doc.push(Element::Dialogue, "Alright. Page one.");
     doc.push(Element::Transition, "SMASH CUT TO:");
     doc.reseed_ids();
+    if let Some(b) = doc.blocks.first_mut() {
+        b.note = "The writer faces the empty page.".to_string();
+    }
     doc
 }
