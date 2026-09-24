@@ -46,3 +46,13 @@ pub fn split_at_char(s: &str, index: usize) -> (String, String) {
 pub fn char_len(s: &str) -> usize {
     s.chars().count()
 }
+
+/// Select `from..to` (characters) in the block `id`.
+pub fn select(ctx: &egui::Context, id: egui::Id, from: usize, to: usize) {
+    let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+    state.cursor.set_char_range(Some(CCursorRange::two(
+        CCursor::new(from),
+        CCursor::new(to),
+    )));
+    state.store(ctx, id);
+}

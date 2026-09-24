@@ -140,6 +140,23 @@ pub struct Block {
     pub id: u64,
     pub element: Element,
     pub text: String,
+    /// A scene heading's synopsis — what the index card says. Empty for every
+    /// other element.
+    pub note: String,
+    /// A scene heading's card colour, an index into the theme's six tints.
+    pub tint: Option<usize>,
+}
+
+impl Block {
+    pub fn new(id: u64, element: Element, text: &str) -> Block {
+        Block {
+            id,
+            element,
+            text: text.to_string(),
+            note: String::new(),
+            tint: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -148,6 +165,8 @@ pub struct Meta {
     pub author: String,
     pub contact: String,
     pub draft: String,
+    /// Gathered at the top of the library.
+    pub starred: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -176,11 +195,7 @@ impl Default for Document {
 fn doc_block(next_id: &mut u64, element: Element, text: &str) -> Block {
     let id = *next_id;
     *next_id += 1;
-    Block {
-        id,
-        element,
-        text: text.to_string(),
-    }
+    Block::new(id, element, text)
 }
 
 impl Document {
@@ -254,15 +269,6 @@ impl Document {
             .iter()
             .filter(|b| b.element == SceneHeading && !b.text.trim().is_empty())
             .count()
-    }
-
-    /// Every scene heading, for the outline panel: (block id, text).
-    pub fn outline(&self) -> Vec<(u64, String)> {
-        self.blocks
-            .iter()
-            .filter(|b| b.element == SceneHeading)
-            .map(|b| (b.id, b.text.clone()))
-            .collect()
     }
 }
 
@@ -343,4 +349,410 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
         out.push(String::new());
     }
     out
+}
+
+// ---------------------------------------------------------------- scenes --
+
+/// One scene: its heading block and every block up to the next heading.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Scene {
+    /// The heading block's id.
+    pub id: u64,
+    /// 1-based, in script order.
+    pub number: usize,
+    pub heading: String,
+    pub synopsis: String,
+    pub tint: Option<usize>,
+    /// Block index range, heading included, end exclusive.
+    pub start: usize,
+    pub end: usize,
+    /// Everyone who speaks in it, in order of first cue.
+    pub cast: Vec<String>,
+    pub words: usize,
+}
+
+/// What a character name is once its extensions are taken off:
+/// `MARIA (V.O.)` and `MARIA (CONT'D)` are both MARIA.
+pub fn base_character(name: &str) -> String {
+    let t = name.trim().trim_end_matches('^').trim();
+    let cut = t.find('(').unwrap_or(t.len());
+    t[..cut].trim().to_uppercase()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CastMember {
+    pub name: String,
+    /// How many times the character speaks.
+    pub cues: usize,
+    /// Words of dialogue.
+    pub words: usize,
+    /// How many scenes they speak in.
+    pub scenes: usize,
+    /// The id of every cue, in order, for jumping between them.
+    pub cue_ids: Vec<u64>,
+}
+
+impl Document {
+    /// Every scene in the script. Anything before the first heading is not a
+    /// scene and is left out.
+    pub fn scenes(&self) -> Vec<Scene> {
+        let mut out: Vec<Scene> = Vec::new();
+        for (i, b) in self.blocks.iter().enumerate() {
+            if b.element == SceneHeading {
+                if let Some(last) = out.last_mut() {
+                    last.end = i;
+                }
+                out.push(Scene {
+                    id: b.id,
+                    number: out.len() + 1,
+                    heading: b.text.clone(),
+                    synopsis: b.note.clone(),
+                    tint: b.tint,
+                    start: i,
+                    end: self.blocks.len(),
+                    cast: Vec::new(),
+                    words: 0,
+                });
+            }
+        }
+        for sc in &mut out {
+            for b in &self.blocks[sc.start..sc.end] {
+                sc.words += b.text.split_whitespace().count();
+                if b.element == Character && !b.text.trim().is_empty() {
+                    let name = base_character(&b.text);
+                    if !name.is_empty() && !sc.cast.contains(&name) {
+                        sc.cast.push(name);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Which scene the block `id` belongs to, as an index into `scenes()`.
+    pub fn scene_of(&self, id: u64) -> Option<usize> {
+        let at = self.index_of(id)?;
+        let mut found = None;
+        let mut n = 0usize;
+        for (i, b) in self.blocks.iter().enumerate() {
+            if i > at {
+                break;
+            }
+            if b.element == SceneHeading {
+                found = Some(n);
+                n += 1;
+            }
+        }
+        found
+    }
+
+    /// Everyone who speaks, in the order they first do.
+    pub fn speakers(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for b in &self.blocks {
+            if b.element == Character {
+                let n = base_character(&b.text);
+                if !n.is_empty() && !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+        }
+        out
+    }
+
+    /// Everyone who speaks, most lines first.
+    pub fn cast(&self) -> Vec<CastMember> {
+        let mut out: Vec<CastMember> = Vec::new();
+        let mut current: Option<usize> = None;
+        let mut scene_no = 0usize;
+        let mut seen_in: Vec<(usize, usize)> = Vec::new(); // (cast index, scene)
+        for b in &self.blocks {
+            match b.element {
+                SceneHeading => {
+                    scene_no += 1;
+                    current = None;
+                }
+                Character => {
+                    let name = base_character(&b.text);
+                    if name.is_empty() {
+                        current = None;
+                        continue;
+                    }
+                    let k = match out.iter().position(|c| c.name == name) {
+                        Some(k) => k,
+                        None => {
+                            out.push(CastMember {
+                                name,
+                                cues: 0,
+                                words: 0,
+                                scenes: 0,
+                                cue_ids: Vec::new(),
+                            });
+                            out.len() - 1
+                        }
+                    };
+                    out[k].cues += 1;
+                    out[k].cue_ids.push(b.id);
+                    if !seen_in.contains(&(k, scene_no)) {
+                        seen_in.push((k, scene_no));
+                        out[k].scenes += 1;
+                    }
+                    current = Some(k);
+                }
+                Dialogue => {
+                    if let Some(k) = current {
+                        out[k].words += b.text.split_whitespace().count();
+                    }
+                }
+                Parenthetical => {}
+                _ => current = None,
+            }
+        }
+        out.sort_by(|a, b| b.cues.cmp(&a.cues).then(a.name.cmp(&b.name)));
+        out
+    }
+
+    /// Move scene `from` so it lands before what is now scene `to` (or at the
+    /// end when `to` is past the last). Returns true if anything moved.
+    pub fn move_scene(&mut self, from: usize, to: usize) -> bool {
+        let scenes = self.scenes();
+        if from >= scenes.len() || to > scenes.len() || to == from || to == from + 1 {
+            return false;
+        }
+        let src = &scenes[from];
+        let chunk: Vec<Block> = self.blocks.drain(src.start..src.end).collect();
+        let len = chunk.len();
+        let insert_at = if to == scenes.len() {
+            self.blocks.len()
+        } else {
+            let target = scenes[to].start;
+            if target > src.start {
+                target - len
+            } else {
+                target
+            }
+        };
+        for (k, b) in chunk.into_iter().enumerate() {
+            self.blocks.insert(insert_at + k, b);
+        }
+        true
+    }
+
+    /// Take a whole scene out: its heading and everything under it.
+    pub fn remove_scene(&mut self, n: usize) -> bool {
+        let scenes = self.scenes();
+        let Some(sc) = scenes.get(n) else {
+            return false;
+        };
+        self.blocks.drain(sc.start..sc.end);
+        self.ensure_not_empty();
+        true
+    }
+
+    /// Words of dialogue against words of everything else, for the balance
+    /// readout.
+    pub fn dialogue_share(&self) -> f32 {
+        let (mut talk, mut all) = (0usize, 0usize);
+        for b in &self.blocks {
+            let w = b.text.split_whitespace().count();
+            all += w;
+            if b.element == Dialogue {
+                talk += w;
+            }
+        }
+        if all == 0 {
+            0.0
+        } else {
+            talk as f32 / all as f32
+        }
+    }
+
+    /// Every occurrence of `needle`, as (block id, char start), case folded.
+    pub fn find(&self, needle: &str) -> Vec<(u64, usize)> {
+        let needle = needle.to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let n_len = needle.chars().count();
+        let mut out = Vec::new();
+        for b in &self.blocks {
+            let hay: Vec<char> = b.text.to_lowercase().chars().collect();
+            let pat: Vec<char> = needle.chars().collect();
+            if hay.len() < n_len {
+                continue;
+            }
+            let mut i = 0;
+            while i + n_len <= hay.len() {
+                if hay[i..i + n_len] == pat[..] {
+                    out.push((b.id, i));
+                    i += n_len;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        out
+    }
+
+    /// Replace every occurrence of `needle` (case folded) with `with`,
+    /// keeping each element's capitalisation rule. Returns how many.
+    pub fn replace_all(&mut self, needle: &str, with: &str) -> usize {
+        if needle.is_empty() {
+            return 0;
+        }
+        let mut count = 0;
+        for b in &mut self.blocks {
+            let (text, n) = replace_folded(&b.text, needle, with);
+            if n > 0 {
+                count += n;
+                b.text = if b.element.is_upper() {
+                    text.to_uppercase()
+                } else {
+                    text
+                };
+            }
+        }
+        count
+    }
+}
+
+/// Case-insensitive replace that leaves everything else in the string alone.
+pub fn replace_folded(hay: &str, needle: &str, with: &str) -> (String, usize) {
+    let h: Vec<char> = hay.chars().collect();
+    let lower: Vec<char> = hay.to_lowercase().chars().collect();
+    let pat: Vec<char> = needle.to_lowercase().chars().collect();
+    // lowercasing can change the length of exotic characters; bail out safely
+    if lower.len() != h.len() || pat.is_empty() {
+        return (hay.to_string(), 0);
+    }
+    let mut out = String::new();
+    let mut i = 0;
+    let mut n = 0;
+    while i < h.len() {
+        if i + pat.len() <= h.len() && lower[i..i + pat.len()] == pat[..] {
+            out.push_str(with);
+            i += pat.len();
+            n += 1;
+        } else {
+            out.push(h[i]);
+            i += 1;
+        }
+    }
+    (out, n)
+}
+
+// ------------------------------------------------------------- SmartType --
+
+const SLUG_PREFIXES: [&str; 5] = ["INT. ", "EXT. ", "INT./EXT. ", "EXT./INT. ", "EST. "];
+const TIMES: [&str; 11] = [
+    "DAY",
+    "NIGHT",
+    "MORNING",
+    "EVENING",
+    "AFTERNOON",
+    "DAWN",
+    "DUSK",
+    "CONTINUOUS",
+    "LATER",
+    "MOMENTS LATER",
+    "SAME",
+];
+const TRANSITIONS: [&str; 10] = [
+    "CUT TO:",
+    "SMASH CUT TO:",
+    "MATCH CUT TO:",
+    "JUMP CUT TO:",
+    "DISSOLVE TO:",
+    "FADE IN:",
+    "FADE OUT.",
+    "FADE TO BLACK.",
+    "INTERCUT WITH:",
+    "BACK TO:",
+];
+
+/// What SmartType would add to `typed`, the text of block `own` so far — the
+/// remainder only, never the part already there. Character cues come from
+/// everyone who already speaks; scene headings from the prefixes, the places
+/// already used and the usual times of day; transitions from the standard set.
+pub fn complete(doc: &Document, own: u64, element: Element, typed: &str) -> Option<String> {
+    let typed_up = typed.to_uppercase();
+    if typed_up.trim().is_empty() {
+        return None;
+    }
+    // (candidate, weight) — heavier wins, shorter breaks ties
+    let mut cands: Vec<(String, usize)> = Vec::new();
+    let mut add = |c: String, w: usize| {
+        if let Some(x) = cands.iter_mut().find(|(s, _)| *s == c) {
+            x.1 += w;
+        } else {
+            cands.push((c, w));
+        }
+    };
+    match element {
+        Character => {
+            for b in &doc.blocks {
+                if b.element == Character && b.id != own {
+                    let n = base_character(&b.text);
+                    if !n.is_empty() {
+                        add(n, 1);
+                    }
+                }
+            }
+        }
+        SceneHeading => {
+            for p in SLUG_PREFIXES {
+                add(p.to_string(), 1);
+            }
+            // until INT. or EXT. is written out, that is all that is offered
+            if !SLUG_PREFIXES.iter().any(|p| typed_up.starts_with(p)) {
+                cands.retain(|(c, _)| c.len() > typed_up.len() && c.starts_with(&typed_up));
+                cands.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+                let best = cands.into_iter().next()?.0;
+                return Some(best[typed_up.len()..].to_string());
+            }
+            for b in &doc.blocks {
+                if b.element != SceneHeading || b.id == own {
+                    continue;
+                }
+                let h = b.text.trim().to_uppercase();
+                if h.is_empty() {
+                    continue;
+                }
+                // the place on its own, ready for a time of day
+                if let Some(cut) = h.rfind(" - ") {
+                    add(format!("{} - ", &h[..cut]), 2);
+                }
+                add(h, 1);
+            }
+            if let Some(cut) = typed_up.rfind(" - ") {
+                let head = &typed_up[..cut];
+                for t in TIMES {
+                    add(format!("{head} - {t}"), 1);
+                }
+            }
+        }
+        Transition => {
+            for t in TRANSITIONS {
+                add(t.to_string(), 1);
+            }
+        }
+        _ => return None,
+    }
+    cands.retain(|(c, _)| c.len() > typed_up.len() && c.starts_with(&typed_up));
+    cands.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.len().cmp(&b.0.len())));
+    let best = cands.into_iter().next()?.0;
+    Some(best[typed_up.len()..].to_string())
+}
+
+/// Screen time for a length measured in eighths of a page — the unit a
+/// schedule is drawn up in.
+pub fn eighths_label(eighths: usize) -> String {
+    let whole = eighths / 8;
+    let part = eighths % 8;
+    match (whole, part) {
+        (0, 0) => "0".to_string(),
+        (0, p) => format!("{p}/8"),
+        (w, 0) => format!("{w}"),
+        (w, p) => format!("{w} {p}/8"),
+    }
 }

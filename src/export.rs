@@ -16,6 +16,10 @@ pub struct Line {
     pub indent: usize,
     pub text: String,
     pub element: Option<Element>,
+    /// The block the line came from; `None` for spacing.
+    pub block: Option<u64>,
+    /// On the first line of a scene heading, the scene's number.
+    pub scene: Option<usize>,
 }
 
 impl Line {
@@ -24,6 +28,8 @@ impl Line {
             indent: 0,
             text: String::new(),
             element: None,
+            block: None,
+            scene: None,
         }
     }
 }
@@ -31,8 +37,13 @@ impl Line {
 /// Flatten the document into wrapped, indented lines.
 pub fn compose(doc: &Document) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::new();
+    let mut scene_no = 0usize;
 
     for block in &doc.blocks {
+        if block.element == Element::SceneHeading {
+            // an empty heading still counts, so numbers match the navigator
+            scene_no += 1;
+        }
         let text = block.text.trim();
         if text.is_empty() {
             continue;
@@ -54,11 +65,17 @@ pub fn compose(doc: &Document) -> Vec<Line> {
             text.to_string()
         };
 
-        for l in wrap(&body, e.width_cols()) {
+        for (k, l) in wrap(&body, e.width_cols()).into_iter().enumerate() {
             out.push(Line {
                 indent: e.indent_cols(),
                 text: l,
                 element: Some(e),
+                block: Some(block.id),
+                scene: if k == 0 && e == Element::SceneHeading {
+                    Some(scene_no)
+                } else {
+                    None
+                },
             });
         }
     }
@@ -107,8 +124,64 @@ pub fn page_count(doc: &Document) -> usize {
 }
 
 /// Rough runtime: one formatted page ~ one minute of screen time.
+#[allow(dead_code)]
 pub fn runtime_minutes(doc: &Document) -> usize {
     page_count(doc)
+}
+
+/// Where each printed page begins: (page number, block id), for page 2 on.
+/// The block is the first one with a line on that page, so a page that breaks
+/// in the middle of a long paragraph is marked just above that paragraph.
+pub fn page_starts(doc: &Document) -> Vec<(usize, u64)> {
+    let pages = paginate(&compose(doc));
+    let mut out = Vec::new();
+    for (i, page) in pages.iter().enumerate().skip(1) {
+        if let Some(id) = page.iter().find_map(|l| l.block) {
+            out.push((i + 1, id));
+        }
+    }
+    out
+}
+
+/// For every scene, in order: (heading id, page it starts on, length in
+/// eighths of a page). Lengths are measured on the printed layout, and a
+/// scene never measures less than an eighth.
+pub fn scene_lengths(doc: &Document) -> Vec<(u64, usize, usize)> {
+    let pages = paginate(&compose(doc));
+    // flatten to (page, line within all printed lines, line)
+    let mut starts: Vec<(u64, usize, usize)> = Vec::new(); // (id, page, global line)
+    let mut total = 0usize;
+    let heading_ids: Vec<u64> = doc
+        .blocks
+        .iter()
+        .filter(|b| b.element == Element::SceneHeading)
+        .map(|b| b.id)
+        .collect();
+    for (pi, page) in pages.iter().enumerate() {
+        for l in page {
+            if let (Some(id), Some(Element::SceneHeading)) = (l.block, l.element) {
+                if !starts.iter().any(|(s, _, _)| *s == id) {
+                    starts.push((id, pi + 1, total));
+                }
+            }
+            total += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for id in heading_ids {
+        match starts.iter().position(|(s, _, _)| *s == id) {
+            Some(k) => {
+                let (_, page, at) = starts[k];
+                let end = starts.get(k + 1).map(|x| x.2).unwrap_or(total);
+                let lines = end.saturating_sub(at) as f32;
+                let eighths = ((lines / LINES_PER_PAGE as f32) * 8.0).round().max(1.0) as usize;
+                out.push((id, page, eighths));
+            }
+            // an empty heading prints nothing
+            None => out.push((id, 0, 0)),
+        }
+    }
+    out
 }
 
 // ---------- plain text ----------
@@ -167,7 +240,12 @@ pub fn to_fountain(doc: &Document) -> String {
             continue;
         }
         match b.element {
-            Element::SceneHeading => s.push_str(&format!("\n.{}\n\n", text.to_uppercase())),
+            Element::SceneHeading => {
+                s.push_str(&format!("\n.{}\n\n", text.to_uppercase()));
+                if !b.note.trim().is_empty() {
+                    s.push_str(&format!("= {}\n\n", b.note.trim()));
+                }
+            }
             Element::Shot => s.push_str(&format!("\n{}\n\n", text.to_uppercase())),
             Element::Action => s.push_str(&format!("{}\n\n", text)),
             Element::Character => s.push_str(&format!("@{}\n", text.to_uppercase())),
@@ -191,7 +269,14 @@ const TOP_MARGIN_MM: f32 = 25.4; // 1"
 const CHAR_W_MM: f32 = 2.54; // 10 cpi
 const LINE_H_MM: f32 = 25.4 / 6.0; // 12pt single spaced = 1/6"
 
+#[allow(dead_code)]
 pub fn to_pdf(doc: &Document, path: &Path) -> Result<(), String> {
+    to_pdf_with(doc, path, false)
+}
+
+/// The PDF, optionally with scene numbers in both margins the way a shooting
+/// script carries them.
+pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(), String> {
     use printpdf::{BuiltinFont, Mm, PdfDocument};
 
     let title = if doc.meta.title.trim().is_empty() {
@@ -261,6 +346,18 @@ pub fn to_pdf(doc: &Document, path: &Path) -> Result<(), String> {
             let x = LEFT_MARGIN_MM + line.indent as f32 * CHAR_W_MM;
             let y = PAGE_H_MM - TOP_MARGIN_MM - (row as f32 + 1.0) * LINE_H_MM;
             let bold = matches!(line.element, Some(Element::SceneHeading));
+            if scene_numbers {
+                if let Some(n) = line.scene {
+                    let num = format!("{n}");
+                    let y = PAGE_H_MM - TOP_MARGIN_MM - (row as f32 + 1.0) * LINE_H_MM;
+                    let w = num.chars().count() as f32 * CHAR_W_MM;
+                    // left: ending half an inch short of the text column
+                    layer.use_text(&num, 12.0, Mm(LEFT_MARGIN_MM - 12.7 - w), Mm(y), &courier_bold);
+                    // right: just past the end of the text column
+                    let right = LEFT_MARGIN_MM + PAGE_COLS as f32 * CHAR_W_MM + 5.0;
+                    layer.use_text(&num, 12.0, Mm(right), Mm(y), &courier_bold);
+                }
+            }
             layer.use_text(
                 &line.text,
                 12.0,
@@ -277,6 +374,78 @@ pub fn to_pdf(doc: &Document, path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- final draft ----------
+
+fn xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Final Draft's own format, so a script can go straight to a production that
+/// lives in it. Paragraph types are Final Draft's names for the same elements;
+/// the synopsis travels as the scene's summary.
+pub fn to_fdx(doc: &Document) -> String {
+    let mut s = String::new();
+    s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n");
+    s.push_str("<FinalDraft DocumentType=\"Script\" Template=\"No\" Version=\"5\">\n");
+    s.push_str("  <Content>\n");
+    for b in &doc.blocks {
+        let text = b.text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let kind = match b.element {
+            Element::SceneHeading => "Scene Heading",
+            Element::Action => "Action",
+            Element::Character => "Character",
+            Element::Parenthetical => "Parenthetical",
+            Element::Dialogue => "Dialogue",
+            Element::Transition => "Transition",
+            Element::Shot => "Shot",
+        };
+        let body = if b.element == Element::Parenthetical {
+            format!("({})", text.trim_matches(|c| c == '(' || c == ')').trim())
+        } else if b.element.is_upper() {
+            text.to_uppercase()
+        } else {
+            text.to_string()
+        };
+        s.push_str(&format!("    <Paragraph Type=\"{kind}\">\n"));
+        if b.element == Element::SceneHeading && !b.note.trim().is_empty() {
+            s.push_str(&format!(
+                "      <SceneProperties><Summary><Paragraph><Text>{}</Text></Paragraph></Summary></SceneProperties>\n",
+                xml(b.note.trim())
+            ));
+        }
+        s.push_str(&format!("      <Text>{}</Text>\n", xml(&body)));
+        s.push_str("    </Paragraph>\n");
+    }
+    s.push_str("  </Content>\n");
+    s.push_str("  <TitlePage>\n    <Content>\n");
+    let mut title_line = |text: &str, align: &str| {
+        s.push_str(&format!(
+            "      <Paragraph Alignment=\"{align}\"><Text>{}</Text></Paragraph>\n",
+            xml(text)
+        ));
+    };
+    title_line(&doc.meta.title.trim().to_uppercase(), "Center");
+    if !doc.meta.author.trim().is_empty() {
+        title_line("written by", "Center");
+        title_line(doc.meta.author.trim(), "Center");
+    }
+    if !doc.meta.draft.trim().is_empty() {
+        title_line(doc.meta.draft.trim(), "Center");
+    }
+    if !doc.meta.contact.trim().is_empty() {
+        title_line(doc.meta.contact.trim(), "Left");
+    }
+    s.push_str("    </Content>\n  </TitlePage>\n");
+    s.push_str("</FinalDraft>\n");
+    s
+}
+
 // ---------- entry points used by the UI ----------
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -284,26 +453,26 @@ pub enum Format {
     Pdf,
     Text,
     Fountain,
+    FinalDraft,
 }
 
 impl Format {
-    pub fn label(self) -> &'static str {
-        match self {
-            Format::Pdf => "PDF",
-            Format::Text => "Plain text",
-            Format::Fountain => "Fountain",
-        }
-    }
     fn ext(self) -> &'static str {
         match self {
             Format::Pdf => "pdf",
             Format::Text => "txt",
             Format::Fountain => "fountain",
+            Format::FinalDraft => "fdx",
         }
     }
 }
 
+#[allow(dead_code)]
 pub fn export(doc: &Document, format: Format) -> Result<PathBuf, String> {
+    export_with(doc, format, false)
+}
+
+pub fn export_with(doc: &Document, format: Format, scene_numbers: bool) -> Result<PathBuf, String> {
     storage::ensure_dirs().map_err(|e| e.to_string())?;
     let name = format!(
         "{}.{}",
@@ -313,7 +482,8 @@ pub fn export(doc: &Document, format: Format) -> Result<PathBuf, String> {
     let path = storage::exports_dir().join(name);
 
     match format {
-        Format::Pdf => to_pdf(doc, &path)?,
+        Format::Pdf => to_pdf_with(doc, &path, scene_numbers)?,
+        Format::FinalDraft => std::fs::write(&path, to_fdx(doc)).map_err(|e| e.to_string())?,
         Format::Text => std::fs::write(&path, to_plain_text(doc)).map_err(|e| e.to_string())?,
         Format::Fountain => std::fs::write(&path, to_fountain(doc)).map_err(|e| e.to_string())?,
     }
