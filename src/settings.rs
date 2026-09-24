@@ -163,6 +163,11 @@ pub struct Settings {
     pub colour_seed: u32,
     /// Where "View on YouTrack", at the foot of the library, goes.
     pub youtrack_url: String,
+    // ---- what a PDF carries; remembered from the Export window ----
+    pub pdf_title_page: bool,
+    pub pdf_scene_numbers: bool,
+    /// Each speaker's cue and lines printed in their colour.
+    pub pdf_character_colors: bool,
 }
 
 pub const DEFAULT_YOUTRACK: &str = "https://markedexiled.youtrack.cloud/dashboard?id=177-0";
@@ -197,6 +202,9 @@ impl Default for Settings {
             character_colors_reading: false,
             colour_seed: 0,
             youtrack_url: DEFAULT_YOUTRACK.to_string(),
+            pdf_title_page: true,
+            pdf_scene_numbers: false,
+            pdf_character_colors: false,
         }
     }
 }
@@ -232,7 +240,10 @@ impl Settings {
              character_colors = {}\n\
              character_colors_reading = {}\n\
              colour_seed = {}\n\
-             youtrack_url = {}\n",
+             youtrack_url = {}\n\
+             pdf_title_page = {}\n\
+             pdf_scene_numbers = {}\n\
+             pdf_character_colors = {}\n",
             self.theme.slug(),
             b(self.light_mode),
             b(self.animations),
@@ -260,12 +271,18 @@ impl Settings {
             b(self.character_colors_reading),
             self.colour_seed,
             self.youtrack_url.trim(),
+            b(self.pdf_title_page),
+            b(self.pdf_scene_numbers),
+            b(self.pdf_character_colors),
         )
     }
 
     pub fn parse(text: &str) -> Settings {
         let mut s = Settings::default();
         let yes = |v: &str| matches!(v, "yes" | "true" | "1" | "on");
+        // Scene numbers used to be one switch for the editor and the PDF;
+        // a file from then keeps its PDF as it was.
+        let mut pdf_numbers_said = false;
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -306,6 +323,12 @@ impl Settings {
                 "character_colors" => s.character_colors = yes(v),
                 "character_colors_reading" => s.character_colors_reading = yes(v),
                 "colour_seed" => s.colour_seed = v.parse::<u32>().unwrap_or(0),
+                "pdf_title_page" => s.pdf_title_page = yes(v),
+                "pdf_scene_numbers" => {
+                    s.pdf_scene_numbers = yes(v);
+                    pdf_numbers_said = true;
+                }
+                "pdf_character_colors" => s.pdf_character_colors = yes(v),
                 "youtrack_url" => {
                     s.youtrack_url = if v.is_empty() {
                         DEFAULT_YOUTRACK.to_string()
@@ -315,6 +338,9 @@ impl Settings {
                 }
                 _ => {}
             }
+        }
+        if !pdf_numbers_said {
+            s.pdf_scene_numbers = s.scene_numbers;
         }
         s
     }

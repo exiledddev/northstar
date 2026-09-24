@@ -545,3 +545,134 @@ fn a_tint_is_exactly_as_strong_as_asked() {
     assert_eq!((t.r(), t.g(), t.b()), (10, 5, 3), "premultiplied at 5%, not boosted");
     assert_eq!(crate::theme::tint(c, 0.0), Color32::TRANSPARENT);
 }
+
+#[test]
+fn a_page_selection_reads_like_a_print_dialog() {
+    use export::{describe_pages, parse_page_range as r};
+    assert_eq!(r("1-3, 7, 10-", 12).unwrap(), vec![1, 2, 3, 7, 10, 11, 12]);
+    assert_eq!(r("3", 12).unwrap(), vec![3]);
+    assert_eq!(r("-2", 12).unwrap(), vec![1, 2], "an open start is page 1");
+    assert_eq!(r("7 3;3,1", 12).unwrap(), vec![1, 3, 7], "sorted, without repeats");
+    assert_eq!(r("10-99", 12).unwrap(), vec![10, 11, 12], "a range past the end stops at it");
+    assert_eq!(r("2\u{2013}4", 12).unwrap(), vec![2, 3, 4], "an en dash is a dash");
+    for bad in ["", "0", "5-2", "abc", "13", "1-x"] {
+        assert!(r(bad, 12).is_err(), "{bad:?} should be refused");
+    }
+    assert_eq!(r("20", 12).unwrap_err(), "There are only 12 pages");
+    assert_eq!(describe_pages(&[1, 2, 3, 7, 10, 11, 12]), "1-3, 7, 10-12");
+    assert_eq!(describe_pages(&[4]), "4");
+}
+
+fn long_speeches() -> Document {
+    let mut d = Document::default();
+    d.blocks.clear();
+    d.meta.title = "Voices".into();
+    d.push(Element::SceneHeading, "INT. HALL - NIGHT");
+    for k in 0..40 {
+        d.push(Element::Action, "Somebody crosses the hall and the floor answers every step.");
+        d.push(Element::Character, if k % 2 == 0 { "MARIA" } else { "COLE (V.O.)" });
+        d.push(Element::Parenthetical, "(low)");
+        d.push(Element::Dialogue, "Say it once, say it plainly, and then say nothing at all for the rest of the night.");
+    }
+    d.reseed_ids();
+    d
+}
+
+#[test]
+fn a_pdf_plan_keeps_chosen_pages_their_numbers_and_their_voices() {
+    let d = long_speeches();
+    let total = export::page_count(&d);
+    assert!(total >= 3, "{total}");
+    let inks: std::collections::HashMap<String, [u8; 3]> =
+        [("MARIA".to_string(), [200, 0, 0]), ("COLE".to_string(), [0, 0, 200])].into_iter().collect();
+    let opts = export::PdfOptions {
+        pages: Some(vec![2, total]),
+        voices: Some(inks),
+        ..export::PdfOptions::default()
+    };
+    let plan = export::pdf_plan(&d, &opts);
+    assert_eq!(plan.iter().map(|p| p.number).collect::<Vec<_>>(), vec![2, total], "numbered as in the whole script");
+    for page in &plan {
+        for (line, ink) in &page.lines {
+            match line.element {
+                Some(Element::Action) | Some(Element::SceneHeading) => assert_eq!(*ink, None, "{}", line.text),
+                Some(Element::Character) | Some(Element::Parenthetical) | Some(Element::Dialogue) => {
+                    assert!(ink.is_some(), "speech carries its speaker's ink: {}", line.text)
+                }
+                _ => {}
+            }
+        }
+    }
+    // a speech broken over a page keeps its voice on the next page
+    let all = export::pdf_plan(&d, &export::PdfOptions { voices: opts.voices.clone(), ..Default::default() });
+    for w in all.windows(2) {
+        if let Some((l, ink)) = w[1].lines.iter().find(|(l, _)| l.element.is_some()) {
+            if l.element == Some(Element::Dialogue) {
+                assert!(ink.is_some(), "carried over the break");
+            }
+        }
+    }
+    // without voices, everything is black
+    assert!(export::pdf_plan(&d, &export::PdfOptions::default())
+        .iter()
+        .all(|p| p.lines.iter().all(|(_, i)| i.is_none())));
+}
+
+#[test]
+fn a_pdf_of_some_pages_has_just_those_pages() {
+    let d = long_speeches();
+    let dir = std::env::temp_dir();
+    let count = |path: &std::path::Path| {
+        let b = std::fs::read(path).unwrap();
+        let t = String::from_utf8_lossy(&b);
+        t.matches("/Type /Page\n").count() + t.matches("/Type/Page\n").count()
+            + t.matches("/Type /Page>>").count() + t.matches("/Type/Page/").count()
+            + t.matches("/Type /Page/").count() + t.matches("/Type /Page ").count()
+    };
+    let whole = dir.join(format!("ns-whole-{}.pdf", std::process::id()));
+    export::to_pdf_opts(&d, &whole, &export::PdfOptions::default()).unwrap();
+    let some = dir.join(format!("ns-some-{}.pdf", std::process::id()));
+    let inks = crate::theme::character_inks(&d.speakers(), 0);
+    export::to_pdf_opts(
+        &d,
+        &some,
+        &export::PdfOptions {
+            title_page: false,
+            pages: Some(vec![2]),
+            voices: Some(inks),
+            scene_numbers: true,
+        },
+    )
+    .unwrap();
+    let (w, s) = (count(&whole), count(&some));
+    assert_eq!(w, 1 + export::page_count(&d), "title page and every page");
+    assert_eq!(s, 1, "one chosen page, no title page");
+    assert!(export::to_pdf_opts(
+        &d,
+        &some,
+        &export::PdfOptions { title_page: false, pages: Some(vec![]), ..Default::default() }
+    )
+    .is_err(), "an empty PDF is refused");
+}
+
+#[test]
+fn character_inks_read_on_paper_whatever_the_app_theme() {
+    let names: Vec<String> = (0..9).map(|k| format!("SPEAKER {k}")).collect();
+    for dark in [true, false] {
+        crate::theme::set_palette(ThemeId::JetBrains, dark);
+        let inks = crate::theme::character_inks(&names, 5);
+        let app = crate::theme::character_colors(&names, 5);
+        for n in &names {
+            let [r, g, b] = inks[n];
+            let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            assert!(l < 140.0, "{n} is dark enough for white paper ({l})");
+            // the same hue as in the app: the strongest channel agrees
+            let c = app[n];
+            let top = |x: [u8; 3]| (0..3).max_by_key(|&i| x[i]).unwrap();
+            assert_eq!(top([r, g, b]), top([c.r(), c.g(), c.b()]), "{n} keeps its hue");
+        }
+    }
+    // scene numbers used to be one switch; an old file keeps its PDF as it was
+    assert!(Settings::parse("scene_numbers = yes\n").pdf_scene_numbers);
+    assert!(!Settings::parse("scene_numbers = yes\npdf_scene_numbers = no\n").pdf_scene_numbers);
+}

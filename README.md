@@ -158,6 +158,7 @@ and the type decides the indent, the width, and whether it is forced to caps.
 | `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` | Undo / redo, document-wide |
 | `Ctrl+N` | New script — its title is selected, ready to type over |
 | `Ctrl+E` | Quick Export: PDF, then open it (or show it, or nothing — Settings) |
+| `Ctrl+Shift+E` | Export PDF…: choose pages, title page, scene numbers, character colours |
 | `Ctrl+F` / `Ctrl+H` | Find and replace in the script |
 | `Ctrl+Shift+F` | Filter the library |
 | `Ctrl+G` | Write → Cards → Read |
@@ -259,9 +260,25 @@ in the library on its own. Anything unrecognised becomes action rather than
 being dropped.
 
 **Export** (the `⋯` menu) gives you PDF (title page, page numbers, proper
-Courier geometry, and scene numbers in both margins if you turn them on),
-**Final Draft** `.fdx`, **Fountain** (for Highland, Beat, afterwriting…), or
-plain text.
+Courier geometry), **Final Draft** `.fdx`, **Fountain** (for Highland, Beat,
+afterwriting…), or plain text.
+
+**Export PDF…** (`⋯` menu, `Ctrl+Shift+E`, or *Export…* in Reading mode) opens
+a window for the PDF:
+
+- **Pages** — all of them, the page you are on, or exactly the ones you name,
+  the way a print dialog takes them: `1-3, 7, 10-`. Chosen pages keep the
+  numbers they have in the whole script, as revised pages do, and the file is
+  named for them (`my-script-pages-1-3_7.pdf`) so it never overwrites the full
+  PDF.
+- **Title page**, **scene numbers** in both margins, and **character colours**
+  — every speaker's cue and lines printed in their own colour. These are the
+  app's character colours, the same hue for each speaker, deepened so they
+  read as ink on white paper whatever theme the app is in; a strip in the
+  window shows them as they will print.
+
+The choices are remembered, and Quick Export (`Ctrl+E`) uses them for the
+whole script.
 
 **Import** — the arrow beside *New script*, the `⋯` menu, dropping a file onto
 the window, or `northstar some-file.fountain` — reads Fountain, Final Draft
@@ -332,7 +349,7 @@ and goes.
 ## Development
 
 ```bash
-cargo test          # 64 tests: behaviour, files, formats, and headless UI
+cargo test          # 69 tests: behaviour, files, formats, and headless UI
 cargo build --release
 ./target/release/northstar --emit-icon icon.svg   # the mark, as the app draws it
 ```
