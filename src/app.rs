@@ -2433,13 +2433,29 @@ impl App {
             chips_w += head.painter().layout_no_wrap(t.clone(), chip_font.clone(), p.text).rect.width() + 15.0 + gap;
         }
         chips_w += head.painter().layout_no_wrap(details_label.to_string(), chip_font.clone(), p.text).rect.width() + 17.0;
-        let file = self
-            .path
-            .as_ref()
-            .and_then(|x| x.file_name())
-            .and_then(|s| s.to_str())
-            .unwrap_or("not saved yet")
-            .to_string();
+        // where the script lives: its file on the desktop; on a team, who
+        // saved it last (its id there means nothing to anyone)
+        let file = match (self.store.team(), self.path.as_ref()) {
+            (Some(team), Some(path)) => {
+                let me = team.me.clone();
+                self.entries
+                    .iter()
+                    .find(|e| &e.path == path)
+                    .and_then(|e| {
+                        e.edited_by
+                            .as_ref()
+                            .map(|by| format!("saved by {}", crate::people::by_line(by, Some(&me), &relative_time(e.modified))))
+                    })
+                    .unwrap_or_else(|| team.name.clone())
+            }
+            _ => self
+                .path
+                .as_ref()
+                .and_then(|x| x.file_name())
+                .and_then(|s| s.to_str())
+                .unwrap_or("not saved yet")
+                .to_string(),
+        };
         let room = head.available_width() - editor::GUTTER - chips_w - 16.0;
         let char_w = head
             .painter()
@@ -3644,9 +3660,11 @@ impl App {
 
                         ui::separator(ui);
             ui::section(ui, "Starting up & saving");
-            let mut v = self.settings.splash;
-            if ui::toggle_row(ui, "Splash screen", "", &mut v) {
-                self.settings.splash = v;
+            if !crate::WEB {
+                let mut v = self.settings.splash;
+                if ui::toggle_row(ui, "Splash screen", "", &mut v) {
+                    self.settings.splash = v;
+                }
             }
             if crate::WEB {
                 // in a browser an export is a download, and saving to the team

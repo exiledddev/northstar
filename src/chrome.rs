@@ -30,6 +30,10 @@ pub fn backdrop(ctx: &egui::Context, fill: egui::Color32) {
     let r = if maximized(ctx) { 0.0 } else { theme::R_WINDOW };
     let painter = ctx.layer_painter(egui::LayerId::background());
     painter.rect_filled(rect, egui::Rounding::same(r), fill);
+    if crate::WEB {
+        // a browser tab's edge is the browser's
+        return;
+    }
     // the single hairline in the app: the edge of the window itself
     painter.rect_stroke(
         rect.shrink(0.5),

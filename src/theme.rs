@@ -1405,9 +1405,11 @@ pub fn apply(ctx: &egui::Context) {
     w.open.fg_stroke = Stroke::new(1.0_f32, p.text);
     w.open.rounding = Rounding::same(R_CTRL);
 
-    ctx.set_visuals(v);
-
-    ctx.style_mut(|s| {
+    // The palette says light or dark, not the system. egui keeps a style for
+    // each and picks by the system's setting — which a browser follows, and
+    // which can disagree with the theme chosen here — so both get this one.
+    ctx.all_styles_mut(|s| {
+        s.visuals = v.clone();
         s.spacing.item_spacing = Vec2::new(8.0, 8.0);
         s.spacing.button_padding = Vec2::new(11.0, 6.0);
         s.spacing.window_margin = Margin::same(18.0);
