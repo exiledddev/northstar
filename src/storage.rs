@@ -38,15 +38,21 @@
 //! what makes parsing a single pass with no ambiguity. Files written by the
 //! first Northstar open unchanged; files written by this one open in it.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::fs;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use web_time::SystemTime;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::export;
+use crate::backend::Person;
 use crate::model::{Block, Document, Element, Meta};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::settings::Settings;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn data_home() -> PathBuf {
     dirs::data_dir().unwrap_or_else(|| {
         dirs::home_dir()
@@ -55,39 +61,48 @@ fn data_home() -> PathBuf {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn library_root() -> PathBuf {
     data_home().join("northstar")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn scripts_dir() -> PathBuf {
     library_root().join("scripts")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn exports_dir() -> PathBuf {
     library_root().join("exports")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn snapshots_dir() -> PathBuf {
     library_root().join("snapshots")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn settings_path() -> PathBuf {
     library_root().join("settings.conf")
 }
 
 /// Tesseract's own settings, for following its theme.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn tesseract_settings_path() -> PathBuf {
     data_home().join("tesseract").join("settings.conf")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn ensure_dirs() -> io::Result<()> {
     fs::create_dir_all(scripts_dir())?;
     fs::create_dir_all(exports_dir())?;
     Ok(())
 }
 
+/// One script in the library, as the library lists it.
 #[derive(Clone, Debug)]
 pub struct Entry {
+    /// Where it lives: its file on the desktop, its id on a team library.
     pub path: PathBuf,
     pub title: String,
     pub modified: SystemTime,
@@ -95,8 +110,15 @@ pub struct Entry {
     pub starred: bool,
     pub pages: usize,
     pub scenes: usize,
+    /// Who saved it last. Team libraries only; `None` on the desktop.
+    pub edited_by: Option<Person>,
+    /// Who has it open for editing right now, if that is someone else.
+    pub editing: Option<Person>,
+    /// The name on its title page, for the Home screen's cards.
+    pub author: String,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn list_scripts() -> Vec<Entry> {
     let mut out = Vec::new();
     let Ok(rd) = fs::read_dir(scripts_dir()) else {
@@ -139,6 +161,9 @@ pub fn list_scripts() -> Vec<Entry> {
             starred: meta.starred,
             pages: export::page_count(&doc),
             scenes: doc.scene_count(),
+            edited_by: None,
+            editing: None,
+            author: meta.author.clone(),
         });
     }
     out.sort_by(|a, b| b.modified.cmp(&a.modified));
@@ -168,6 +193,7 @@ pub fn slugify(title: &str) -> String {
 }
 
 /// A free path for `title`, adding -2, -3 ... if needed.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn unique_path(title: &str, ignore: Option<&Path>) -> PathBuf {
     let base = slugify(title);
     let dir = scripts_dir();
@@ -364,6 +390,7 @@ pub fn from_markdown(text: &str) -> Document {
     doc
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn save(path: &Path, doc: &Document) -> io::Result<()> {
     ensure_dirs()?;
     let tmp = path.with_extension("md.tmp");
@@ -372,11 +399,13 @@ pub fn save(path: &Path, doc: &Document) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn load(path: &Path) -> io::Result<Document> {
     let text = fs::read_to_string(path)?;
     Ok(from_markdown(&text))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn delete(path: &Path) -> io::Result<()> {
     fs::remove_file(path)
 }
@@ -384,6 +413,7 @@ pub fn delete(path: &Path) -> io::Result<()> {
 // ---------- snapshots ----------
 
 /// The folder a script's snapshots are kept in, named after the file.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn snapshot_folder(script: &Path) -> PathBuf {
     let stem = script
         .file_stem()
@@ -394,13 +424,19 @@ pub fn snapshot_folder(script: &Path) -> PathBuf {
 
 #[derive(Clone, Debug)]
 pub struct Snapshot {
+    /// Where it lives: its file on the desktop, its id on a team library.
     pub path: PathBuf,
     /// When it was taken, as it reads in the file name: 2026-09-24 14:05:09.
     pub when: String,
     pub pages: usize,
+    /// Who took it. Team libraries only.
+    pub by: Option<Person>,
+    /// What it was taken for, when it was not by hand: "Before Alex edited".
+    pub label: Option<String>,
 }
 
 /// Put a dated copy of the script aside.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn take_snapshot(script: &Path, doc: &Document) -> io::Result<PathBuf> {
     let dir = snapshot_folder(script);
     fs::create_dir_all(&dir)?;
@@ -416,6 +452,7 @@ pub fn take_snapshot(script: &Path, doc: &Document) -> io::Result<PathBuf> {
 }
 
 /// A script's snapshots, newest first.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn list_snapshots(script: &Path) -> Vec<Snapshot> {
     let mut out = Vec::new();
     let Ok(rd) = fs::read_dir(snapshot_folder(script)) else {
@@ -436,13 +473,20 @@ pub fn list_snapshots(script: &Path) -> Vec<Snapshot> {
             None => stem.clone(),
         };
         let pages = load(&path).map(|d| export::page_count(&d)).unwrap_or(0);
-        out.push(Snapshot { path, when, pages });
+        out.push(Snapshot {
+            path,
+            when,
+            pages,
+            by: None,
+            label: None,
+        });
     }
     out.sort_by(|a, b| b.path.cmp(&a.path));
     out
 }
 
 /// When a script's file is renamed, its snapshots follow it.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn follow_rename(from: &Path, to: &Path) {
     let old = snapshot_folder(from);
     if old.is_dir() {
@@ -455,12 +499,14 @@ pub fn follow_rename(from: &Path, to: &Path) {
 
 // ---------- settings ----------
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_settings() -> Settings {
     fs::read_to_string(settings_path())
         .map(|t| Settings::parse(&t))
         .unwrap_or_default()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn write_settings(s: &Settings) -> io::Result<()> {
     fs::create_dir_all(library_root())?;
     fs::write(settings_path(), s.serialize())
@@ -468,6 +514,7 @@ pub fn write_settings(s: &Settings) -> io::Result<()> {
 
 /// Tesseract's settings, if Tesseract is installed and has been run. Read
 /// with the same parser — the keys the two apps share are spelled the same.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_tesseract_settings() -> Option<(Settings, SystemTime)> {
     let path = tesseract_settings_path();
     let when = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
@@ -479,6 +526,7 @@ pub fn read_tesseract_settings() -> Option<(Settings, SystemTime)> {
 // ---------- the desktop ----------
 
 /// Hand a path to the desktop (Dolphin, Nautilus, default PDF viewer, ...).
+#[cfg(not(target_arch = "wasm32"))]
 pub fn open_with_desktop(path: &Path) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
@@ -486,6 +534,7 @@ pub fn open_with_desktop(path: &Path) {
 /// Open the file manager with `path` selected, where the desktop speaks the
 /// freedesktop FileManager1 interface. KDE's Dolphin, Nautilus and Nemo all do.
 /// Falls back to simply opening the containing folder.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn reveal_in_file_manager(path: &Path) {
     let uri = format!("file://{}", path.display());
     let spoke = std::process::Command::new("dbus-send")
@@ -513,6 +562,7 @@ pub fn reveal_in_file_manager(path: &Path) {
 /// Ask the desktop for a file to import. KDE's own dialog where there is one,
 /// GNOME's otherwise. Blocks, so call it off the UI thread. `None` if the
 /// dialog was cancelled or neither tool is installed.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let tries: [(&str, Vec<String>); 2] = [
@@ -554,17 +604,27 @@ pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
 /// Read a screenplay from another format into a document. Fountain, Final
 /// Draft and Northstar's own markdown are understood; anything else is read
 /// as Fountain, which degrades to plain action.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn import_file(path: &Path) -> Result<Document, String> {
     let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    Ok(import_text(name, &text))
+}
+
+/// The same, from a file's name and contents — what a browser hands over when
+/// a file is picked or dropped. The name decides the format and, when the
+/// script has no title of its own, gives it one.
+pub fn import_text(name: &str, text: &str) -> Document {
+    let path = Path::new(name);
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_lowercase();
     let mut doc = match ext.as_str() {
-        "md" | "markdown" => from_markdown(&text),
-        "fdx" => crate::fountain::parse_fdx(&text),
-        _ => crate::fountain::parse(&text),
+        "md" | "markdown" => from_markdown(text),
+        "fdx" => crate::fountain::parse_fdx(text),
+        _ => crate::fountain::parse(text),
     };
     if doc.meta.title.trim().is_empty() {
         doc.meta.title = path
@@ -574,5 +634,5 @@ pub fn import_file(path: &Path) -> Result<Document, String> {
             .replace(['-', '_'], " ");
     }
     doc.normalize();
-    Ok(doc)
+    doc
 }

@@ -309,7 +309,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1aa79e62e7697b8e29b513a68abacf485adcd1fe8284a4316c5ae868e6633327"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -1537,6 +1539,7 @@ dependencies = [
  "wayland-backend",
  "wayland-client",
  "wayland-protocols-plasma",
+ "web-time",
  "x11rb",
 ]
 
@@ -2030,10 +2033,7 @@ checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 [[package]]
 name = "printpdf"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c30a4cc87c3ca9a98f4970db158a7153f8d1ec8076e005751173c57836380b1d"
 dependencies = [
- "js-sys",
  "lopdf",
  "owned_ttf_parser 0.19.0",
  "time",

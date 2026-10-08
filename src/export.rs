@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::io;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
 use crate::model::{wrap, Document, Element, LINES_PER_PAGE, PAGE_COLS};
@@ -270,6 +271,7 @@ const TOP_MARGIN_MM: f32 = 25.4; // 1"
 const CHAR_W_MM: f32 = 2.54; // 10 cpi
 const LINE_H_MM: f32 = 25.4 / 6.0; // 12pt single spaced = 1/6"
 
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 pub fn to_pdf(doc: &Document, path: &Path) -> Result<(), String> {
     to_pdf_opts(doc, path, &PdfOptions::default())
@@ -277,6 +279,7 @@ pub fn to_pdf(doc: &Document, path: &Path) -> Result<(), String> {
 
 /// The PDF, optionally with scene numbers in both margins the way a shooting
 /// script carries them.
+#[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
 pub fn to_pdf_with(doc: &Document, path: &Path, scene_numbers: bool) -> Result<(), String> {
     to_pdf_opts(
@@ -434,7 +437,15 @@ pub fn describe_pages(pages: &[usize]) -> String {
     parts.join(", ")
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn to_pdf_opts(doc: &Document, path: &Path, opts: &PdfOptions) -> Result<(), String> {
+    let bytes = pdf_bytes(doc, opts)?;
+    std::fs::write(path, bytes).map_err(|e| e.to_string())
+}
+
+/// The PDF itself, in memory: written to a file on the desktop, handed to the
+/// browser as a download on the web. The same bytes either way.
+pub fn pdf_bytes(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>, String> {
     use printpdf::{BuiltinFont, Color, Mm, PdfDocument, Rgb};
 
     let plan = pdf_plan(doc, opts);
@@ -552,10 +563,9 @@ pub fn to_pdf_opts(doc: &Document, path: &Path, opts: &PdfOptions) -> Result<(),
         }
     }
 
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut writer = io::BufWriter::new(file);
+    let mut writer = io::BufWriter::new(Vec::new());
     pdf.save(&mut writer).map_err(|e| e.to_string())?;
-    Ok(())
+    writer.into_inner().map_err(|e| e.to_string())
 }
 
 // ---------- final draft ----------
@@ -652,10 +662,12 @@ impl Format {
 }
 
 #[allow(dead_code)]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn export(doc: &Document, format: Format) -> Result<PathBuf, String> {
     export_with(doc, format, false)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn export_with(doc: &Document, format: Format, scene_numbers: bool) -> Result<PathBuf, String> {
     export_opts(
         doc,
@@ -667,10 +679,20 @@ pub fn export_with(doc: &Document, format: Format, scene_numbers: bool) -> Resul
     )
 }
 
-/// Export with the PDF's options. A PDF of only some pages says which in its
-/// name, so it never overwrites the whole script's PDF.
+/// Export with the PDF's options, into the exports folder. A PDF of only some
+/// pages says which in its name, so it never overwrites the whole script's PDF.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn export_opts(doc: &Document, format: Format, opts: &PdfOptions) -> Result<PathBuf, String> {
     storage::ensure_dirs().map_err(|e| e.to_string())?;
+    let (name, bytes) = render(doc, format, opts)?;
+    let path = storage::exports_dir().join(name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// What an export is called and what is in it, without writing it anywhere —
+/// the desktop puts it in the exports folder, the browser downloads it.
+pub fn render(doc: &Document, format: Format, opts: &PdfOptions) -> Result<(String, Vec<u8>), String> {
     let part = match (&opts.pages, format) {
         (Some(p), Format::Pdf) => format!("-pages-{}", describe_pages(p).replace(", ", "_")),
         _ => String::new(),
@@ -680,13 +702,11 @@ pub fn export_opts(doc: &Document, format: Format, opts: &PdfOptions) -> Result<
         storage::slugify(&doc.meta.title),
         format.ext()
     );
-    let path = storage::exports_dir().join(name);
-
-    match format {
-        Format::Pdf => to_pdf_opts(doc, &path, opts)?,
-        Format::FinalDraft => std::fs::write(&path, to_fdx(doc)).map_err(|e| e.to_string())?,
-        Format::Text => std::fs::write(&path, to_plain_text(doc)).map_err(|e| e.to_string())?,
-        Format::Fountain => std::fs::write(&path, to_fountain(doc)).map_err(|e| e.to_string())?,
-    }
-    Ok(path)
+    let bytes = match format {
+        Format::Pdf => pdf_bytes(doc, opts)?,
+        Format::FinalDraft => to_fdx(doc).into_bytes(),
+        Format::Text => to_plain_text(doc).into_bytes(),
+        Format::Fountain => to_fountain(doc).into_bytes(),
+    };
+    Ok((name, bytes))
 }

@@ -8,13 +8,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime};
+use web_time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Align, Color32, Layout, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::alerts::{self, Tone};
 use crate::anim;
+use crate::backend::{Access, Event, Load, Store};
 use crate::blur;
 use crate::caret;
 use crate::cards::{self, CardsState};
@@ -130,8 +130,20 @@ struct Find {
 }
 
 pub struct App {
+    /// Where the library lives: the folder on the desktop, the team server in
+    /// a browser. Everything the app reads or writes goes through it.
+    store: Box<dyn Store>,
     doc: Document,
     path: Option<PathBuf>,
+    /// Whether this script may be written to. Always yes on the desktop.
+    access: Access,
+    /// A script asked for that has not arrived yet.
+    opening: Option<PathBuf>,
+    /// A snapshot asked for, to restore when it arrives.
+    restoring: Option<PathBuf>,
+    /// The script you are reading has just been let go by whoever was
+    /// editing it: it can be edited now.
+    lock_free: bool,
     entries: Vec<Entry>,
     ed: EditorState,
     cards: CardsState,
@@ -194,16 +206,15 @@ pub struct App {
     page_key: String,
     page_born: Instant,
     splash: Option<Splash>,
-    importing: Option<mpsc::Receiver<Result<Option<PathBuf>, String>>>,
-    /// The scripts folder's own modification time, so a script dropped in
-    /// from outside shows up in the library without waiting for a save.
-    library_seen: Option<(SystemTime, Instant)>,
     /// Files named on the command line — "Open with Northstar" — handled on
     /// the first frame.
     pub arrivals: Vec<PathBuf>,
 }
 
 impl App {
+    /// The desktop app, over the library folder, on a window that asks the
+    /// compositor for blur.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let mut app = App::with_context(&cc.egui_ctx);
         app.blur = blur::Blur::install(cc);
@@ -217,14 +228,19 @@ impl App {
         app
     }
 
-    /// The real constructor; the headless UI tests build an App from here.
+    /// The desktop app over the library folder, without a window of its own;
+    /// the headless UI tests build an App from here.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn with_context(ctx: &egui::Context) -> Self {
-        let _ = storage::ensure_dirs();
+        App::with_store(ctx, Box::new(crate::backend::LocalBackend::new()))
+    }
 
-        let mut settings = storage::read_settings();
+    /// The app over any library: the real constructor.
+    pub fn with_store(ctx: &egui::Context, mut store: Box<dyn Store>) -> Self {
+        let mut settings = store.read_settings();
         let mut tess_seen = None;
         if settings.match_tesseract {
-            if let Some((t, when)) = storage::read_tesseract_settings() {
+            if let Some((t, when)) = store.tesseract_look() {
                 settings.adopt_look(&t);
                 tess_seen = Some(when);
             }
@@ -236,11 +252,11 @@ impl App {
         theme::install_fonts(ctx);
         ctx.set_zoom_factor(settings.font_scale);
 
-        let entries = storage::list_scripts();
+        let entries = store.list();
         let (doc, path) = match entries.first() {
-            Some(e) => match storage::load(&e.path) {
-                Ok(d) => (d, Some(e.path.clone())),
-                Err(_) => (starter_document(), None),
+            Some(e) => match store.load(&e.path) {
+                Load::Ready(d, _) => (d, Some(e.path.clone())),
+                Load::Pending | Load::Failed(_) => (starter_document(), None),
             },
             None => (starter_document(), None),
         };
@@ -254,9 +270,14 @@ impl App {
         ed.font_px = settings.page_px;
 
         let mut app = App {
+            store,
             baseline: doc.clone(),
             doc,
             path,
+            access: Access::Edit,
+            opening: None,
+            restoring: None,
+            lock_free: false,
             entries,
             ed,
             cards: CardsState::default(),
@@ -304,15 +325,12 @@ impl App {
             page_key: String::new(),
             page_born: Instant::now(),
             splash,
-            importing: None,
-            library_seen: None,
             arrivals: Vec::new(),
         };
 
-        if app.path.is_none() {
+        if app.path.is_none() && app.store.team().is_none() {
             // first run: put the starter script in the library
-            app.path = Some(storage::unique_path(&app.doc.meta.title, None));
-            app.save(false);
+            app.create_current();
             app.refresh_entries();
         }
         // the caret starts where the script does, as it does on opening one
@@ -390,45 +408,44 @@ impl App {
     }
 
     fn save(&mut self, allow_rename: bool) {
+        // nothing is ever written from a script you may only read
+        if !self.access.can_edit() {
+            self.dirty = false;
+            return;
+        }
         self.doc.normalize();
-        let mut path = match self.path.clone() {
-            Some(p) => p,
-            None => storage::unique_path(&self.doc.meta.title, None),
+        let Some(mut path) = self.path.clone() else {
+            self.create_current();
+            return;
         };
 
         if allow_rename {
-            let wanted = storage::slugify(&self.doc.meta.title);
-            let current_stem = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string();
-            let stem_matches = current_stem == wanted
-                || current_stem
-                    .rsplit_once('-')
-                    .map(|(head, tail)| head == wanted && tail.parse::<u32>().is_ok())
-                    .unwrap_or(false);
-            if !stem_matches {
-                let new_path = storage::unique_path(&self.doc.meta.title, Some(&path));
-                if path.exists() {
-                    if std::fs::rename(&path, &new_path).is_ok() {
-                        storage::follow_rename(&path, &new_path);
-                        path = new_path;
-                    }
-                } else {
-                    path = new_path;
-                }
-            }
+            path = self.store.follow_title(&path, &self.doc.meta.title);
         }
 
-        match storage::save(&path, &self.doc) {
+        match self.store.save(&path, &self.doc) {
             Ok(()) => {
                 self.path = Some(path);
                 self.dirty = false;
                 self.saved_at = Some(Instant::now());
                 self.refresh_entries();
             }
-            Err(e) => self.deck.say("Could not save", &e.to_string(), Tone::Danger),
+            Err(e) => self.deck.say("Could not save", &e, Tone::Danger),
+        }
+    }
+
+    /// Put the script on the page into the library as a new one.
+    fn create_current(&mut self) {
+        self.doc.normalize();
+        match self.store.create(&self.doc) {
+            Ok(path) => {
+                self.path = Some(path);
+                self.access = Access::Edit;
+                self.dirty = false;
+                self.saved_at = Some(Instant::now());
+                self.refresh_entries();
+            }
+            Err(e) => self.deck.say("Could not save", &e, Tone::Danger),
         }
     }
 
@@ -436,27 +453,43 @@ impl App {
         if self.dirty {
             self.save(false);
         }
-        match storage::load(&path) {
-            Ok(doc) => {
-                self.doc = doc;
-                self.path = Some(path);
-                self.baseline = self.doc.clone();
-                self.undo.clear();
-                self.redo.clear();
-                self.dirty = false;
-                self.snapshot_due = false;
-                self.layout_stale = true;
-                self.words_seen = None;
-                self.find.current = 0;
-                self.ed.fresh = true;
-                self.ed.focus_block = self.doc.blocks.first().map(|b| b.id);
-                if self.mode == Mode::Write {
-                    self.ed.pending_focus = self.doc.blocks.first().map(|b| (b.id, Caret::End));
-                }
-                self.refresh_layout(true);
+        if let Some(old) = self.path.clone() {
+            if old != path {
+                self.store.close(&old);
             }
-            Err(e) => self.deck.say("Could not open", &e.to_string(), Tone::Danger),
         }
+        match self.store.load(&path) {
+            Load::Ready(doc, access) => self.install(path, doc, access),
+            Load::Pending => self.opening = Some(path),
+            Load::Failed(e) => self.deck.say("Could not open", &e, Tone::Danger),
+        }
+    }
+
+    /// Put an opened script on the page.
+    fn install(&mut self, path: PathBuf, doc: Document, access: Access) {
+        self.opening = None;
+        self.doc = doc;
+        self.path = Some(path);
+        self.access = access;
+        self.lock_free = false;
+        self.baseline = self.doc.clone();
+        self.undo.clear();
+        self.redo.clear();
+        self.dirty = false;
+        self.snapshot_due = false;
+        self.layout_stale = true;
+        self.words_seen = None;
+        self.find.current = 0;
+        self.ed.fresh = true;
+        self.ed.focus_block = self.doc.blocks.first().map(|b| b.id);
+        if !self.access.can_edit() {
+            // a script you may only read opens the way it will print
+            self.mode = Mode::Read;
+        }
+        if self.mode == Mode::Write {
+            self.ed.pending_focus = self.doc.blocks.first().map(|b| (b.id, Caret::End));
+        }
+        self.refresh_layout(true);
     }
 
     fn new_script(&mut self) {
@@ -466,12 +499,18 @@ impl App {
         let mut doc = Document::default();
         doc.meta.title = "Untitled Script".to_string();
         doc.meta.draft = today();
+        if let Some(team) = self.store.team() {
+            // on a team, a new script is yours until you say otherwise
+            doc.meta.author = team.me.name.clone();
+        }
+        if let Some(old) = self.path.take() {
+            self.store.close(&old);
+        }
         self.doc = doc;
-        self.path = Some(storage::unique_path("Untitled Script", None));
         self.undo.clear();
         self.redo.clear();
         self.baseline = self.doc.clone();
-        self.save(false);
+        self.create_current();
         self.refresh_entries();
         self.ed.fresh = true;
         self.words_seen = None;
@@ -486,20 +525,14 @@ impl App {
         if self.path.as_deref() == Some(path) && self.dirty {
             self.save(false);
         }
-        match storage::load(path) {
-            Ok(mut doc) => {
-                doc.meta.title = format!("{} (copy)", doc.meta.title);
-                doc.meta.starred = false;
-                let new_path = storage::unique_path(&doc.meta.title, None);
-                match storage::save(&new_path, &doc) {
-                    Ok(()) => {
-                        self.refresh_entries();
-                        self.deck.ok("Duplicated", &doc.meta.title);
-                    }
-                    Err(e) => self.deck.say("Could not duplicate", &e.to_string(), Tone::Danger),
-                }
+        match self.store.duplicate(path) {
+            Ok(Some(title)) => {
+                self.refresh_entries();
+                self.deck.ok("Duplicated", &title);
             }
-            Err(e) => self.deck.say("Could not duplicate", &e.to_string(), Tone::Danger),
+            // the store says so when it is done
+            Ok(None) => {}
+            Err(e) => self.deck.say("Could not duplicate", &e, Tone::Danger),
         }
     }
 
@@ -514,64 +547,67 @@ impl App {
         if let Some(r) = self.rail.last_rects.get(path).copied() {
             self.rail.ghost = Some((title.clone(), r, Instant::now()));
         }
-        match storage::delete(path) {
+        match self.store.delete(path) {
             Ok(()) => {
                 if self.path.as_deref() == Some(path) {
                     self.dirty = false;
                     self.refresh_entries();
                     match self.entries.first().map(|e| e.path.clone()) {
-                        Some(next) => self.open(next),
+                        Some(next) => {
+                            // the deleted one is gone: nothing to save on the way
+                            self.path = None;
+                            self.open(next)
+                        }
                         None => {
                             self.path = None;
                             self.doc = starter_document();
-                            self.path = Some(storage::unique_path(&self.doc.meta.title, None));
-                            self.save(false);
+                            self.create_current();
                             self.ed.fresh = true;
                         }
                     }
                 }
                 self.refresh_entries();
-                self.deck.say("Script deleted", &title, Tone::Warn);
+                if self.store.team().is_some() {
+                    self.deck.say("Moved to Recently deleted", &title, Tone::Warn);
+                } else {
+                    self.deck.say("Script deleted", &title, Tone::Warn);
+                }
             }
-            Err(e) => self.deck.say("Could not delete", &e.to_string(), Tone::Danger),
+            Err(e) => self.deck.say("Could not delete", &e, Tone::Danger),
         }
     }
 
     fn toggle_star(&mut self, path: &Path) {
-        if self.path.as_deref() == Some(path) {
+        // On the desktop a star is written into the script itself. On a team
+        // it is yours alone, so it never goes into the shared script.
+        if self.store.team().is_none() && self.path.as_deref() == Some(path) {
             self.doc.meta.starred = !self.doc.meta.starred;
             self.save(false);
             return;
         }
-        if let Ok(mut doc) = storage::load(path) {
-            doc.meta.starred = !doc.meta.starred;
-            if storage::save(path, &doc).is_ok() {
-                self.refresh_entries();
-            }
+        let on = !self
+            .entries
+            .iter()
+            .find(|e| e.path == path)
+            .map(|e| e.starred)
+            .unwrap_or(false);
+        match self.store.set_starred(path, on) {
+            Ok(()) => self.refresh_entries(),
+            // the desktop never said anything when a star could not be kept
+            Err(e) if self.store.team().is_some() => self.deck.say("Could not star", &e, Tone::Danger),
+            Err(_) => {}
         }
     }
 
     fn refresh_entries(&mut self) {
-        self.entries = storage::list_scripts();
-        if let Ok(m) = std::fs::metadata(storage::scripts_dir()).and_then(|m| m.modified()) {
-            self.library_seen = Some((m, Instant::now()));
-        }
+        self.entries = self.store.list();
     }
 
-    /// Look at the scripts folder now and then; if anything was added,
-    /// removed or renamed there from outside, list it again.
+    /// If the library has changed behind the app's back — a script dropped
+    /// into the folder, a teammate's new script — list it again.
     fn watch_library(&mut self) {
-        if let Some((_, at)) = self.library_seen {
-            if at.elapsed() < Duration::from_millis(1500) {
-                return;
-            }
-        }
-        let now = std::fs::metadata(storage::scripts_dir()).and_then(|m| m.modified()).ok();
-        match (now, self.library_seen) {
-            (Some(m), Some((seen, _))) if m == seen => {
-                self.library_seen = Some((m, Instant::now()));
-            }
-            _ => self.refresh_entries(),
+        if self.store.changed() {
+            self.refresh_entries();
         }
     }
 
@@ -654,16 +690,11 @@ impl App {
     fn export_pdf_with(&mut self, pages: Option<Vec<usize>>) {
         self.doc.normalize();
         let opts = self.pdf_options(pages);
-        match export::export_opts(&self.doc, Format::Pdf, &opts) {
-            Ok(p) => {
-                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("file").to_string();
-                match self.settings.after_export {
-                    AfterExport::Open => storage::open_with_desktop(&p),
-                    AfterExport::Reveal => storage::reveal_in_file_manager(&p),
-                    AfterExport::Nothing => {}
-                }
-                self.deck.ok("Exported", &name);
-            }
+        let after = self.settings.after_export;
+        let done = export::render(&self.doc, Format::Pdf, &opts)
+            .and_then(|(name, bytes)| self.store.deliver(&name, bytes, Some(after)));
+        match done {
+            Ok(name) => self.deck.ok("Exported", &name),
             Err(e) => self.deck.say("Export failed", &e, Tone::Danger),
         }
     }
@@ -671,86 +702,88 @@ impl App {
     fn export(&mut self, format: Format, quick: bool) {
         self.doc.normalize();
         let opts = self.pdf_options(None);
-        match export::export_opts(&self.doc, format, &opts) {
-            Ok(p) => {
-                let name = p
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("file")
-                    .to_string();
-                if format == Format::Pdf && quick {
-                    match self.settings.after_export {
-                        AfterExport::Open => storage::open_with_desktop(&p),
-                        AfterExport::Reveal => storage::reveal_in_file_manager(&p),
-                        AfterExport::Nothing => {}
-                    }
-                }
-                self.deck.ok("Exported", &name);
-            }
+        let after = (format == Format::Pdf && quick).then_some(self.settings.after_export);
+        let done = export::render(&self.doc, format, &opts)
+            .and_then(|(name, bytes)| self.store.deliver(&name, bytes, after));
+        match done {
+            Ok(name) => self.deck.ok("Exported", &name),
             Err(e) => self.deck.say("Export failed", &e, Tone::Danger),
         }
     }
 
+    /// A file from outside, dropped on the window or picked, by its path.
+    #[cfg(not(target_arch = "wasm32"))]
     fn import_path(&mut self, path: &Path) {
         match storage::import_file(path) {
-            Ok(doc) => {
-                if self.dirty {
-                    self.save(false);
-                }
-                let new_path = storage::unique_path(&doc.meta.title, None);
-                match storage::save(&new_path, &doc) {
-                    Ok(()) => {
-                        self.refresh_entries();
-                        let title = doc.meta.title.clone();
-                        self.open(new_path);
-                        self.mode = Mode::Write;
-                        self.deck.ok(
-                            "Imported",
-                            &format!("{title} — {} scenes", self.layout.scenes),
-                        );
-                    }
-                    Err(e) => self.deck.say("Could not import", &e.to_string(), Tone::Danger),
-                }
+            Ok(doc) => self.import_doc(doc),
+            Err(e) => self.deck.say("Could not import", &e, Tone::Danger),
+        }
+    }
+
+    /// A file from outside, by its name and what is in it.
+    fn import_bytes(&mut self, name: &str, bytes: &[u8]) {
+        let text = String::from_utf8_lossy(bytes);
+        let doc = storage::import_text(name, &text);
+        self.import_doc(doc);
+    }
+
+    /// An imported script joins the library and opens, ready to write.
+    fn import_doc(&mut self, doc: Document) {
+        if self.dirty {
+            self.save(false);
+        }
+        match self.store.create(&doc) {
+            Ok(new_path) => {
+                self.refresh_entries();
+                let title = doc.meta.title.clone();
+                self.open(new_path);
+                self.mode = Mode::Write;
+                self.deck.ok(
+                    "Imported",
+                    &format!("{title} — {} scenes", doc.scene_count()),
+                );
             }
             Err(e) => self.deck.say("Could not import", &e, Tone::Danger),
         }
     }
 
     fn start_import(&mut self) {
-        let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = tx.send(storage::pick_file_to_import());
-        });
-        self.importing = Some(rx);
+        self.store.start_import();
     }
 
     fn take_snapshot(&mut self) {
         let Some(path) = self.path.clone() else { return };
         self.doc.normalize();
-        match storage::take_snapshot(&path, &self.doc) {
-            Ok(_) => self.deck.ok("Snapshot taken", "Find it under More → Snapshots."),
-            Err(e) => self.deck.say("Could not take a snapshot", &e.to_string(), Tone::Danger),
+        match self.store.take_snapshot(&path, &self.doc, None) {
+            Ok(()) => self.deck.ok("Snapshot taken", "Find it under More → Snapshots."),
+            Err(e) => self.deck.say("Could not take a snapshot", &e, Tone::Danger),
         }
     }
 
     fn restore_snapshot(&mut self, snap: &Path) {
-        let Some(path) = self.path.clone() else { return };
-        match storage::load(snap) {
-            Ok(old) => {
-                // what is there now is kept first, so a restore loses nothing
-                self.doc.normalize();
-                let _ = storage::take_snapshot(&path, &self.doc);
-                self.checkpoint();
-                let title = self.doc.meta.title.clone();
-                self.doc = old;
-                self.doc.meta.title = title;
-                self.after_history();
-                self.save(false);
-                self.refresh_layout(true);
-                self.deck.ok("Snapshot restored", "The version before it was kept too.");
-            }
-            Err(e) => self.deck.say("Could not restore", &e.to_string(), Tone::Danger),
+        if self.path.is_none() {
+            return;
         }
+        match self.store.load_snapshot(snap) {
+            Load::Ready(old, _) => self.apply_snapshot(old),
+            Load::Pending => self.restoring = Some(snap.to_path_buf()),
+            Load::Failed(e) => self.deck.say("Could not restore", &e, Tone::Danger),
+        }
+    }
+
+    fn apply_snapshot(&mut self, old: Document) {
+        let Some(path) = self.path.clone() else { return };
+        // what is there now is kept first, so a restore loses nothing
+        self.doc.normalize();
+        let _ = self.store.take_snapshot(&path, &self.doc, Some("Before a restore"));
+        self.checkpoint();
+        let title = self.doc.meta.title.clone();
+        self.doc = old;
+        self.doc.meta.title = title;
+        self.after_history();
+        self.save(false);
+        self.refresh_layout(true);
+        self.deck.ok("Snapshot restored", "The version before it was kept too.");
     }
 
     /// A new scene heading straight after the scene the caret is in.
@@ -813,9 +846,8 @@ impl App {
     }
 
     fn save_settings(&mut self) {
-        if let Err(e) = storage::write_settings(&self.settings) {
-            self.deck
-                .say("Could not save settings", &e.to_string(), Tone::Danger);
+        if let Err(e) = self.store.write_settings(&self.settings) {
+            self.deck.say("Could not save settings", &e, Tone::Danger);
         }
     }
 
@@ -832,7 +864,7 @@ impl App {
             return;
         }
         self.tess_checked = Some(Instant::now());
-        if let Some((t, when)) = storage::read_tesseract_settings() {
+        if let Some((t, when)) = self.store.tesseract_look() {
             if self.tess_seen != Some(when) {
                 self.tess_seen = Some(when);
                 if self.settings.adopt_look(&t) {
@@ -881,13 +913,12 @@ impl App {
             .find(|e| e.path == path)
             .map(|e| e.title.clone())
             .unwrap_or_else(|| "this script".into());
-        self.deck.ask(
-            "Delete this script?",
-            &format!("“{title}” goes for good. Its snapshots stay in the library folder."),
-            "Delete",
-            Tone::Danger,
-            Ask::DeleteScript(path),
-        );
+        let what = if self.store.team().is_some() {
+            format!("“{title}” moves to Recently deleted, where anyone on the team can bring it back for 30 days.")
+        } else {
+            format!("“{title}” goes for good. Its snapshots stay in the library folder.")
+        };
+        self.deck.ask("Delete this script?", &what, "Delete", Tone::Danger, Ask::DeleteScript(path));
     }
 
     fn ask_delete_scene(&mut self, n: usize) {
@@ -1311,7 +1342,7 @@ impl App {
                         if youtrack_button(ui, &self.settings.youtrack_url) {
                             let url = self.settings.youtrack_url.trim().to_string();
                             if url.starts_with("http://") || url.starts_with("https://") {
-                                let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+                                self.store.open_url(&url);
                             } else {
                                 self.deck.warn("That is not a web address", "Set the YouTrack link in Settings.");
                             }
@@ -1609,7 +1640,7 @@ impl App {
                         close = true;
                     }
                     if ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
-                        storage::reveal_in_file_manager(&path);
+                        self.store.reveal(Some(&path));
                         close = true;
                     }
                     if ui::menu_item(
@@ -2644,7 +2675,7 @@ impl App {
                         self.popover = None;
                     }
                     if ui::menu_item(ui, &mut rects, "Open the exports folder", Icon::Folder, false) {
-                        storage::open_with_desktop(&storage::exports_dir());
+                        self.store.open_exports();
                         self.popover = None;
                     }
                     ui::separator(ui);
@@ -2699,10 +2730,8 @@ impl App {
                         self.popover = None;
                     }
                     if ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
-                        match &self.path {
-                            Some(pth) => storage::reveal_in_file_manager(pth),
-                            None => storage::open_with_desktop(&storage::scripts_dir()),
-                        }
+                        let here = self.path.clone();
+                        self.store.reveal(here.as_deref());
                         self.popover = None;
                     }
                     ui::separator(ui);
@@ -2723,11 +2752,10 @@ impl App {
         let p = pal();
         let screen = ctx.screen_rect();
         let anchor = self.menu_button_rect;
-        let snaps = self
-            .path
-            .as_ref()
-            .map(|x| storage::list_snapshots(x))
-            .unwrap_or_default();
+        let path = self.path.clone();
+        let snaps = path.as_ref().and_then(|x| self.store.snapshots(x));
+        let loading = snaps.is_none() && path.is_some();
+        let snaps = snaps.unwrap_or_default();
         let area = egui::Area::new(egui::Id::new("ns-snapshots"))
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(
@@ -2757,7 +2785,7 @@ impl App {
                         let mut rects = Vec::new();
                         if snaps.is_empty() {
                             ui.label(
-                                egui::RichText::new("None yet.")
+                                egui::RichText::new(if loading { "Fetching…" } else { "None yet." })
                                     .font(theme::font(theme::T_SM))
                                     .color(p.text_dim),
                             );
@@ -3233,8 +3261,7 @@ impl App {
     /// One category of settings, drawn into the right-hand pane.
     fn settings_body(&mut self, ui: &mut egui::Ui, tab: usize) {
         let p = pal();
-        let tess = storage::tesseract_settings_path().exists();
-        let _ = tess;
+        let tess = self.store.has_tesseract();
         match tab {
             0 => {
             ui::section(ui, "Theme");
@@ -3528,17 +3555,17 @@ impl App {
             6 => {
             ui::section(ui, "Where things live");
             ui.label(
-                egui::RichText::new(short_home(&storage::scripts_dir()))
+                egui::RichText::new(short_home(&PathBuf::from(self.store.location())))
                     .font(theme::font_mono(theme::T_MICRO))
                     .color(p.text_faint),
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if ui::button(ui, "Open library", Some(Icon::Folder), false) {
-                    storage::open_with_desktop(&storage::scripts_dir());
+                    self.store.reveal(None);
                 }
                 if ui::button(ui, "Exports", Some(Icon::Download), false) {
-                    storage::open_with_desktop(&storage::exports_dir());
+                    self.store.open_exports();
                 }
             });
             ui.add_space(8.0);
@@ -3558,7 +3585,7 @@ impl App {
 
     /// A look chosen by hand here stops the look being taken from Tesseract.
     fn stop_matching(&mut self) {
-        if self.settings.match_tesseract && storage::tesseract_settings_path().exists() {
+        if self.settings.match_tesseract && self.store.has_tesseract() {
             self.settings.match_tesseract = false;
             self.deck.say(
                 "No longer matching Tesseract",
@@ -3670,6 +3697,111 @@ impl App {
 
     // ---------- the frame ----------
 
+    /// Files dropped on the window, or handed over on the command line: a
+    /// script already in the library is opened, anything else imported. A
+    /// browser hands over a dropped file's contents rather than its path.
+    fn take_arrivals(&mut self, ctx: &egui::Context) {
+        let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut paths: Vec<PathBuf> = dropped.iter().filter_map(|f| f.path.clone()).collect();
+            paths.append(&mut self.arrivals);
+            for path in paths {
+                let in_library = path
+                    .canonicalize()
+                    .ok()
+                    .zip(storage::scripts_dir().canonicalize().ok())
+                    .map(|(f, lib)| f.starts_with(lib))
+                    .unwrap_or(false);
+                if in_library {
+                    self.open(path);
+                } else {
+                    self.import_path(&path);
+                }
+            }
+        }
+        for f in dropped.iter().filter(|f| f.path.is_none()) {
+            if let Some(bytes) = &f.bytes {
+                if self.can_write() {
+                    self.import_bytes(&f.name, bytes);
+                }
+            }
+        }
+    }
+
+    /// May anything be written to this library at all? Viewers on a team may
+    /// read and export, nothing else.
+    fn can_write(&self) -> bool {
+        self.store.team().map(|t| t.role.can_write()).unwrap_or(true)
+    }
+
+    fn on_event(&mut self, event: Event) {
+        let here = |key: &Path, app: &App| app.path.as_deref() == Some(key);
+        match event {
+            Event::Opened { key, doc, access } => {
+                if self.opening.as_deref() == Some(key.as_path()) {
+                    self.install(key, doc, access);
+                }
+            }
+            Event::LibraryChanged => self.refresh_entries(),
+            Event::Conflict { key, theirs, by } => {
+                if here(&key, self) {
+                    self.install(key, theirs, Access::Edit);
+                    self.deck.say(
+                        &format!("{} saved a newer version", by.first_name()),
+                        "You are looking at theirs now. Yours was kept as a snapshot, under More → Snapshots.",
+                        Tone::Warn,
+                    );
+                }
+                self.refresh_entries();
+            }
+            Event::Locked { key, by } => {
+                if here(&key, self) {
+                    if self.dirty {
+                        let doc = self.doc.clone();
+                        let _ = self.store.take_snapshot(&key, &doc, Some("Your version (kept)"));
+                    }
+                    self.dirty = false;
+                    self.access = Access::ReadOnly { by: Some(by.clone()) };
+                    self.lock_free = false;
+                    self.mode = Mode::Read;
+                    self.deck.say(
+                        &format!("{} is editing this script", by.first_name()),
+                        "It is read only for you until they finish. Anything you had not saved was kept as a snapshot.",
+                        Tone::Warn,
+                    );
+                }
+            }
+            Event::LockFree { key } => {
+                if here(&key, self) && !self.access.can_edit() {
+                    self.lock_free = true;
+                }
+            }
+            Event::Refreshed { key, doc } => {
+                if here(&key, self) && !self.access.can_edit() {
+                    self.doc = doc;
+                    self.baseline = self.doc.clone();
+                    self.layout_stale = true;
+                    self.ed.fresh = true;
+                    self.refresh_layout(true);
+                }
+            }
+            Event::SnapshotDoc { snap, doc } => {
+                if self.restoring.as_deref() == Some(snap.as_path()) {
+                    self.restoring = None;
+                    self.apply_snapshot(doc);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            Event::ImportPath(path) => self.import_path(&path),
+            #[cfg(target_arch = "wasm32")]
+            Event::ImportPath(_) => {}
+            Event::Imported { name, bytes } => self.import_bytes(&name, &bytes),
+            Event::Notice { title, detail, tone } => self.deck.say(&title, &detail, tone),
+            Event::SignedOut => self.deck.say("Signed out", "Sign in again to keep writing.", Tone::Info),
+        }
+    }
+
     pub fn frame(&mut self, ctx: &egui::Context) {
         self.frame_no = self.frame_no.wrapping_add(1);
 
@@ -3699,43 +3831,13 @@ impl App {
             self.shortcuts(ctx);
         }
 
-        // files dropped on the window, or handed over on the command line: a
-        // script already in the library is opened, anything else imported
-        let mut dropped: Vec<PathBuf> = ctx.input(|i| {
-            i.raw
-                .dropped_files
-                .iter()
-                .filter_map(|f| f.path.clone())
-                .collect()
-        });
-        dropped.append(&mut self.arrivals);
-        for path in dropped {
-            let in_library = path
-                .canonicalize()
-                .ok()
-                .zip(storage::scripts_dir().canonicalize().ok())
-                .map(|(f, lib)| f.starts_with(lib))
-                .unwrap_or(false);
-            if in_library {
-                self.open(path);
-            } else {
-                self.import_path(&path);
-            }
+        self.take_arrivals(ctx);
+        // whatever the library has to say since last frame
+        for event in self.store.events() {
+            self.on_event(event);
         }
-        if let Some(rx) = &self.importing {
-            match rx.try_recv() {
-                Ok(Ok(Some(path))) => {
-                    self.importing = None;
-                    self.import_path(&path);
-                }
-                Ok(Ok(None)) => self.importing = None,
-                Ok(Err(e)) => {
-                    self.importing = None;
-                    self.deck.warn("No file picker", &e);
-                }
-                Err(mpsc::TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(200)),
-                Err(mpsc::TryRecvError::Disconnected) => self.importing = None,
-            }
+        if self.store.busy() {
+            ctx.request_repaint_after(Duration::from_millis(200));
         }
 
         // the centre page eases in whenever it changes what it is showing
@@ -3891,6 +3993,7 @@ impl App {
         self.find.needle = needle.to_string();
         self.find.with = with.to_string();
     }
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn debug_import(&mut self, path: &Path) {
         self.import_path(path);
     }

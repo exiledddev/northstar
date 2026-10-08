@@ -181,6 +181,64 @@ fn files_from_the_first_northstar_still_open_unchanged() {
     assert_eq!(d.blocks[1].element, Element::SceneHeading);
 }
 
+/// Scripts as they sit on a writer's disk today: two written by the first
+/// Northstar, one by this one with a card and a star. Every byte matters —
+/// these are somebody's work.
+const A_REAL_LIBRARY: [(&str, &str); 3] = [
+    (
+        "the-long-way-down.md",
+        "---\ntitle: The Long Way Down\nauthor: A. Writer\ncontact: a.writer@example.com · 555-0100\ndraft: Second Draft — 3 March\n---\n\n## INT. WAREHOUSE - NIGHT\n\nRain hammers the corrugated roof. MARIA moves between the crates, counting doors under her breath — “four, five” — until one isn’t locked.\n\n**MARIA (V.O.)**\n\n*(barely audible)*\n\n> Three, four... there you are.\n\n### ANGLE ON THE DOOR\n\nIt swings inward on its own. Café light spills across the floor.\n\n`SMASH CUT TO:`\n\n## EXT. ROOFTOP - CONTINUOUS\n\n**COLE**\n\n> You came back.\n\n**MARIA (CONT'D)**\n\n> I never left.\n\n`FADE OUT.`\n\n",
+    ),
+    (
+        "untitled-script.md",
+        "---\ntitle: Untitled Script\nauthor: \ncontact: \ndraft: \n---\n\n## INT. KITCHEN - DAY\n\nNothing yet.\n\n",
+    ),
+    (
+        "pilot.md",
+        "---\ntitle: Pilot\nauthor: Sam\ncontact: \ndraft: First Draft\nstarred: yes\n---\n\n## INT. OFFICE - MORNING\n<!-- scene: tint=2 | Sam meets the team. -->\n\nPhones ring.\n\n**SAM**\n\n> Morning.\n\n",
+    ),
+];
+
+#[test]
+fn an_existing_library_is_never_rewritten_by_the_app() {
+    let _g = sandbox("golden");
+    storage::ensure_dirs().unwrap();
+    let dir = storage::scripts_dir();
+    for (name, text) in A_REAL_LIBRARY {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    let listing = || {
+        let mut names: Vec<String> = std::fs::read_dir(storage::scripts_dir())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing();
+
+    // starting the app over the library writes nothing
+    let ctx = eframe::egui::Context::default();
+    let mut app = crate::app::App::with_context(&ctx);
+    assert_eq!(listing(), before, "starting up added or removed a file");
+    for (name, text) in A_REAL_LIBRARY {
+        assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), text, "{name} changed on start-up");
+    }
+
+    // opening each one and saving it the way closing the window does
+    // (rename allowed) gives back exactly the same file, under the same name
+    for (name, text) in A_REAL_LIBRARY {
+        let path = dir.join(name);
+        app.debug_open(path.clone());
+        assert_eq!(app.path().as_deref(), Some(path.as_path()));
+        app.debug_save();
+        assert_eq!(app.path().as_deref(), Some(path.as_path()), "{name} was renamed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{name} changed on save");
+    }
+    assert_eq!(listing(), before, "saving added or removed a file");
+}
+
 #[test]
 fn scenes_and_cast_are_counted_the_way_a_schedule_would() {
     let d = three_scenes();

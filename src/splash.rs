@@ -4,7 +4,7 @@
 //! grows into the application when it is done. That is what makes a splash
 //! feel like a splash rather than a loading screen.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 

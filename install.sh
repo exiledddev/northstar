@@ -72,6 +72,18 @@ fi
 say "Building (this takes a few minutes the first time)"
 cargo build --release
 
+# ---- keep a copy of the library ----------------------------------------
+# Before a new build goes in, the whole library (scripts, snapshots,
+# settings) is copied aside. Copied only: nothing in it is moved, changed or
+# deleted, and the copy is never touched again. Delete old copies by hand when
+# you no longer want them.
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/northstar"
+if [ -d "$DATA_DIR" ]; then
+  BACKUP="${DATA_DIR}-backup-$(date +%Y%m%d-%H%M%S)"
+  cp -a "$DATA_DIR" "$BACKUP"
+  say "Your library was copied to $BACKUP first"
+fi
+
 # ---- install ------------------------------------------------------------
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 install -m 755 target/release/northstar "$BIN_DIR/northstar"

@@ -15,7 +15,7 @@
 // primitive with no caller in Northstar today is still part of the language.
 #![allow(dead_code)]
 
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Color32, Layout, Pos2, Rect, Sense, Vec2};
 

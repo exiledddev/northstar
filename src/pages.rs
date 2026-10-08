@@ -10,7 +10,7 @@
 //! scroll wheel or the control at the foot. Click a line to go and write it.
 
 use eframe::egui::{self, Key, Modifiers, Pos2, Rect, Sense, Vec2};
-use std::time::Instant;
+use web_time::Instant;
 
 use crate::anim;
 use crate::export::{compose, paginate, Line};

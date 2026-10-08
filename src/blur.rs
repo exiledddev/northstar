@@ -13,7 +13,9 @@
 //! does not carry the interface, the app is told so and paints its glass more
 //! opaque instead of showing the desktop through it.
 
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+#[cfg(target_os = "linux")]
+use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 /// What came of asking.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
