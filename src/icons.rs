@@ -77,6 +77,12 @@ pub enum Icon {
     Star4,
     Book,
     External,
+    // ---- for the team library ----
+    Home,
+    Lock,
+    SignOut,
+    /// Discord's mark, simplified to a line glyph for the sign-in button.
+    Discord,
 }
 
 /// Paint `icon` inside `rect`.
@@ -629,6 +635,49 @@ pub fn draw_weighted(
             line(vec![p(0.44, 0.20), p(0.20, 0.20), p(0.20, 0.80), p(0.80, 0.80), p(0.80, 0.56)]);
             line(vec![p(0.58, 0.20), p(0.80, 0.20), p(0.80, 0.42)]);
             seg(p(0.80, 0.20), p(0.46, 0.54));
+        }
+
+        Icon::Home => {
+            line(vec![p(0.14, 0.48), p(0.50, 0.16), p(0.86, 0.48)]);
+            line(vec![p(0.24, 0.40), p(0.24, 0.84), p(0.76, 0.84), p(0.76, 0.40)]);
+            line(vec![p(0.42, 0.84), p(0.42, 0.62), p(0.58, 0.62), p(0.58, 0.84)]);
+        }
+
+        Icon::Lock => {
+            boxed(p(0.22, 0.46), p(0.78, 0.86), 0.08);
+            line(vec![p(0.34, 0.46), p(0.34, 0.32), p(0.40, 0.20), p(0.50, 0.16), p(0.60, 0.20), p(0.66, 0.32), p(0.66, 0.46)]);
+            seg(p(0.50, 0.60), p(0.50, 0.72));
+        }
+
+        Icon::SignOut => {
+            line(vec![p(0.52, 0.16), p(0.18, 0.16), p(0.18, 0.84), p(0.52, 0.84)]);
+            seg(p(0.40, 0.50), p(0.86, 0.50));
+            line(vec![p(0.70, 0.34), p(0.86, 0.50), p(0.70, 0.66)]);
+        }
+
+        Icon::Discord => {
+            // the rounded controller face, its two eyes
+            line(vec![
+                p(0.30, 0.24),
+                p(0.20, 0.30),
+                p(0.12, 0.52),
+                p(0.14, 0.70),
+                p(0.30, 0.80),
+                p(0.36, 0.72),
+                p(0.50, 0.75),
+                p(0.64, 0.72),
+                p(0.70, 0.80),
+                p(0.86, 0.70),
+                p(0.88, 0.52),
+                p(0.80, 0.30),
+                p(0.70, 0.24),
+                p(0.64, 0.30),
+                p(0.50, 0.28),
+                p(0.36, 0.30),
+                p(0.30, 0.24),
+            ]);
+            painter.circle_filled(p(0.38, 0.52), s * 0.065, color);
+            painter.circle_filled(p(0.62, 0.52), s * 0.065, color);
         }
 
         Icon::Star4 => {

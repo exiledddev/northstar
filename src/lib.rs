@@ -14,6 +14,8 @@
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod teamtests;
+#[cfg(test)]
 mod uitests;
 
 pub mod alerts;
@@ -31,6 +33,7 @@ pub mod icons;
 pub mod logo;
 pub mod model;
 pub mod pages;
+pub mod people;
 pub mod settings;
 pub mod splash;
 pub mod storage;

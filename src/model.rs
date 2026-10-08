@@ -135,7 +135,7 @@ impl Element {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub id: u64,
     pub element: Element,
@@ -159,7 +159,7 @@ impl Block {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Meta {
     pub title: String,
     pub author: String,
@@ -169,7 +169,7 @@ pub struct Meta {
     pub starred: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Document {
     pub meta: Meta,
     pub blocks: Vec<Block>,

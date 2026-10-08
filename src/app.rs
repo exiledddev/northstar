@@ -31,7 +31,13 @@ use crate::storage::{self, Entry};
 use crate::theme::{self, pal};
 use crate::ui;
 
+mod home;
+mod team;
+
 const SNAPSHOT_IDLE: Duration = Duration::from_millis(700);
+
+/// Settings' Team tab, after the seven every library has. Team libraries only.
+const TEAM_TAB: usize = 7;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -75,6 +81,12 @@ enum Popover {
     Export,
     Snapshots,
     Elements,
+    /// Who you are signed in as, on a team.
+    Account,
+    /// Who worked on this script, and when.
+    History,
+    /// Recently deleted scripts.
+    Trash,
 }
 
 /// What the printed layout says about the script, worked out once whenever it
@@ -144,6 +156,22 @@ pub struct App {
     /// The script you are reading has just been let go by whoever was
     /// editing it: it can be edited now.
     lock_free: bool,
+    /// When "this is read only" was last said, so it is not said on every key.
+    read_only_said: Option<Instant>,
+    /// The script picker is up instead of a script (team libraries).
+    home: bool,
+    home_born: Instant,
+    home_search: String,
+    focus_home_search: bool,
+    /// The card the keyboard is on, and every card in the order drawn.
+    home_sel: usize,
+    home_order: Vec<PathBuf>,
+    /// Have the arrow keys been used on Home? Only then is a card ringed.
+    home_keyed: bool,
+    account_button_rect: Rect,
+    /// The Team tab's "Add someone" field.
+    team_add_id: String,
+    team_add_role: crate::backend::Role,
     entries: Vec<Entry>,
     ed: EditorState,
     cards: CardsState,
@@ -253,7 +281,11 @@ impl App {
         ctx.set_zoom_factor(settings.font_scale);
 
         let entries = store.list();
+        // A team library opens on its script picker, with nothing open: just
+        // starting the app must not take a script out from under somebody.
+        let home = store.team().is_some();
         let (doc, path) = match entries.first() {
+            Some(_) if home => (starter_document(), None),
             Some(e) => match store.load(&e.path) {
                 Load::Ready(d, _) => (d, Some(e.path.clone())),
                 Load::Pending | Load::Failed(_) => (starter_document(), None),
@@ -278,6 +310,17 @@ impl App {
             opening: None,
             restoring: None,
             lock_free: false,
+            read_only_said: None,
+            home,
+            home_born: Instant::now(),
+            home_search: String::new(),
+            focus_home_search: false,
+            home_sel: 0,
+            home_order: Vec::new(),
+            home_keyed: false,
+            account_button_rect: Rect::NOTHING,
+            team_add_id: String::new(),
+            team_add_role: crate::backend::Role::Editor,
             entries,
             ed,
             cards: CardsState::default(),
@@ -343,6 +386,15 @@ impl App {
     // ---------- document lifecycle ----------
 
     fn mark_changed(&mut self) {
+        if !self.access.can_edit() {
+            // A script you may only read cannot be changed, whatever reached
+            // for it: put it back the way it was, and say why.
+            self.doc = self.baseline.clone();
+            self.ed.fresh = true;
+            self.layout_stale = true;
+            self.guard_edit();
+            return;
+        }
         self.dirty = true;
         self.last_change = Some(Instant::now());
         self.snapshot_due = true;
@@ -468,6 +520,7 @@ impl App {
     /// Put an opened script on the page.
     fn install(&mut self, path: PathBuf, doc: Document, access: Access) {
         self.opening = None;
+        self.home = false;
         self.doc = doc;
         self.path = Some(path);
         self.access = access;
@@ -493,6 +546,9 @@ impl App {
     }
 
     fn new_script(&mut self) {
+        if !self.can_write() {
+            return;
+        }
         if self.dirty {
             self.save(false);
         }
@@ -515,6 +571,7 @@ impl App {
         self.ed.fresh = true;
         self.words_seen = None;
         self.mode = Mode::Write;
+        self.home = false;
         // name it first: the title is selected, ready to be typed over
         self.focus_title = true;
         self.refresh_layout(true);
@@ -987,7 +1044,7 @@ impl App {
 
     fn top_panel(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("ns-ribbon")
-            .exact_height(theme::TOPBAR_H)
+            .exact_height(if self.home { chrome::TITLE_H + 10.0 } else { theme::TOPBAR_H })
             .frame(egui::Frame::none().inner_margin(egui::Margin {
                 left: theme::GAP,
                 right: theme::GAP,
@@ -996,9 +1053,11 @@ impl App {
             }))
             .show_separator_line(false)
             .show(ctx, |ui| {
-                chrome::title_bar(ui, ctx);
-                ui.add_space(6.0);
-                self.ribbon_row(ui);
+                chrome::title_bar(ui, ctx, |ui| self.title_extras(ui));
+                if !self.home {
+                    ui.add_space(6.0);
+                    self.ribbon_row(ui);
+                }
             });
     }
 
@@ -1018,7 +1077,10 @@ impl App {
                 ],
                 self.mode.index(),
             ) {
-                self.mode = Mode::from_index(picked);
+                let m = Mode::from_index(picked);
+                if m == Mode::Read || self.guard_edit() {
+                    self.mode = m;
+                }
             }
 
             ui.add_space(6.0);
@@ -1241,6 +1303,10 @@ impl App {
 
     fn read_tools(&mut self, ui: &mut egui::Ui, room: f32) {
         ui.spacing_mut().item_spacing.x = 6.0;
+        if !self.access.can_edit() {
+            self.lock_chip(ui);
+            ui.add_space(4.0);
+        }
         if ui::ribbon_button(ui, Icon::Print, "Quick Export", "Export this script as a PDF  ·  Ctrl+E", false) {
             self.export(Format::Pdf, true);
         }
@@ -1249,7 +1315,12 @@ impl App {
         }
         let left = (room - ui.min_rect().width()).max(0.0);
         self.stats_line(ui, left.min(200.0), false);
-        let hint = ui::pick_that_fits(ui, &["·  click a line to go and write it", "·  click a line to edit"], left - 200.0);
+        let hints: &[&str] = if self.access.can_edit() {
+            &["·  click a line to go and write it", "·  click a line to edit"]
+        } else {
+            &[]
+        };
+        let hint = ui::pick_that_fits(ui, hints, left - 200.0);
         if !hint.is_empty() {
             ui.label(
                 egui::RichText::new(hint)
@@ -1285,11 +1356,16 @@ impl App {
                         // ---- make things ----
                         ui.horizontal(|ui| {
                             let w = ui.available_width() - 38.0;
-                            if new_script_button(ui, w) {
-                                self.new_script();
-                            }
-                            if ui::icon_button(ui, Icon::Upload, "Import Fountain, Final Draft or markdown  ·  or drop a file on the window", 32.0) {
-                                self.start_import();
+                            if self.can_write() {
+                                if new_script_button(ui, w) {
+                                    self.new_script();
+                                }
+                                if ui::icon_button(ui, Icon::Upload, "Import Fountain, Final Draft or markdown  ·  or drop a file on the window", 32.0) {
+                                    self.start_import();
+                                }
+                            } else {
+                                // a viewer's rail starts with the way home
+                                ui.allocate_exact_size(Vec2::new(w, 34.0), Sense::hover());
                             }
                         });
                         ui.add_space(9.0);
@@ -1549,13 +1625,31 @@ impl App {
             if selected { p.primary_light } else { p.text },
         );
         let pages = if selected { self.layout.pages } else { e.pages };
-        ui.painter().text(
-            Pos2::new(rect.left() + 16.0, rect.bottom() - 13.0),
-            egui::Align2::LEFT_CENTER,
-            format!("{pages} pg · {}", relative_time(e.modified)),
-            theme::font_mono(theme::T_MICRO),
-            p.text_faint,
-        );
+        match self.team_row_line(e, pages) {
+            // on a team: who is in it now, or who saved it last
+            Some((line, live)) => {
+                let x = rect.left() + 16.0;
+                if live {
+                    ui.painter().circle_filled(Pos2::new(x + 3.0, rect.bottom() - 13.0), 2.6, p.ok);
+                }
+                ui.painter().text(
+                    Pos2::new(x + if live { 11.0 } else { 0.0 }, rect.bottom() - 13.0),
+                    egui::Align2::LEFT_CENTER,
+                    ui::elide(&line, ((rect.width() - 40.0 - right_pad) / 6.0) as usize),
+                    theme::font(theme::T_MICRO),
+                    if live { p.text_dim } else { p.text_faint },
+                );
+            }
+            None => {
+                ui.painter().text(
+                    Pos2::new(rect.left() + 16.0, rect.bottom() - 13.0),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{pages} pg · {}", relative_time(e.modified)),
+                    theme::font_mono(theme::T_MICRO),
+                    p.text_faint,
+                );
+            }
+        }
 
         let star_rect = Rect::from_center_size(
             Pos2::new(rect.right() - 44.0, rect.center().y),
@@ -1585,7 +1679,8 @@ impl App {
             );
         }
         let del_hot = anim::ease(ui.ctx(), del_resp.id, del_resp.hovered(), anim::HOVER);
-        if hot > 0.02 {
+        let can_delete = self.can_write();
+        if hot > 0.02 && can_delete {
             icons::draw(
                 ui.painter(),
                 del_rect.shrink(6.0),
@@ -1596,7 +1691,7 @@ impl App {
 
         if star_resp.clicked() {
             *star = Some(e.path.clone());
-        } else if del_resp.clicked() {
+        } else if del_resp.clicked() && can_delete {
             *ask = Some(e.path.clone());
         } else if resp.clicked() && !selected {
             *open = Some(e.path.clone());
@@ -1607,7 +1702,9 @@ impl App {
             }
         }
         let _ = star_resp.on_hover_text(if e.starred { "Unstar" } else { "Star this script" });
-        let _ = del_resp.on_hover_text("Delete this script");
+        if can_delete {
+            let _ = del_resp.on_hover_text("Delete this script");
+        }
         if !e.preview.is_empty() {
             let _ = resp.on_hover_text(format!("{}\n{} scenes · right click for more", e.preview, e.scenes));
         }
@@ -1621,6 +1718,8 @@ impl App {
             return;
         };
         let starred = self.entries.iter().find(|e| e.path == path).map(|e| e.starred).unwrap_or(false);
+        let team = self.store.team().is_some();
+        let write = self.can_write();
         let mut close = false;
         let area = egui::Area::new(egui::Id::new("ns-row-menu"))
             .order(egui::Order::Foreground)
@@ -1630,16 +1729,19 @@ impl App {
                     ui.set_width(ui::menu_width(ui, &["Open", "Duplicate", "Show the file", "Remove the star", "Delete script"]));
                     let mut rects = Vec::new();
                     if ui::menu_item(ui, &mut rects, "Open", Icon::Pencil, false) {
-                        if self.path.as_deref() != Some(path.as_path()) {
+                        if self.home {
+                            self.open_from_home(path.clone());
+                        } else if self.path.as_deref() != Some(path.as_path()) {
                             self.open(path.clone());
                         }
                         close = true;
                     }
-                    if ui::menu_item(ui, &mut rects, "Duplicate", Icon::Copy, false) {
+                    if write && ui::menu_item(ui, &mut rects, "Duplicate", Icon::Copy, false) {
                         self.duplicate(&path);
                         close = true;
                     }
-                    if ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
+                    // a team's scripts are not files on this machine
+                    if !team && ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
                         self.store.reveal(Some(&path));
                         close = true;
                     }
@@ -1653,10 +1755,12 @@ impl App {
                         self.toggle_star(&path);
                         close = true;
                     }
-                    ui::separator(ui);
-                    if ui::menu_item(ui, &mut rects, "Delete script", Icon::Trash, true) {
-                        self.ask_delete(path.clone());
-                        close = true;
+                    if write {
+                        ui::separator(ui);
+                        if ui::menu_item(ui, &mut rects, "Delete script", Icon::Trash, true) {
+                            self.ask_delete(path.clone());
+                            close = true;
+                        }
                     }
                 });
             })
@@ -1807,6 +1911,7 @@ impl App {
         ui.add_space(4.0);
         ui::section(ui, "Title page");
         ui.spacing_mut().item_spacing.y = 4.0;
+        let can_edit = self.access.can_edit();
         for (label, value, hint) in [
             ("Title", &mut self.doc.meta.title, "The Long Way Down"),
             ("Written by", &mut self.doc.meta.author, "A. Writer"),
@@ -1819,7 +1924,8 @@ impl App {
                     .color(p.text_faint),
             );
             if ui
-                .add(
+                .add_enabled(
+                    can_edit,
                     egui::TextEdit::singleline(value)
                         .desired_width(f32::INFINITY)
                         .margin(egui::Margin::symmetric(10.0, 6.0))
@@ -1831,19 +1937,21 @@ impl App {
             }
             ui.add_space(4.0);
         }
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
-            for (label, value) in [
-                ("today", today()),
-                ("first draft", "First Draft".to_string()),
-                ("revised", format!("Revised {}", today())),
-            ] {
-                if ui::chip_button(ui, label) {
-                    self.doc.meta.draft = value;
-                    edited = true;
+        if can_edit {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(5.0, 5.0);
+                for (label, value) in [
+                    ("today", today()),
+                    ("first draft", "First Draft".to_string()),
+                    ("revised", format!("Revised {}", today())),
+                ] {
+                    if ui::chip_button(ui, label) {
+                        self.doc.meta.draft = value;
+                        edited = true;
+                    }
                 }
-            }
-        });
+            });
+        }
         if edited {
             self.mark_changed();
         }
@@ -1878,6 +1986,7 @@ impl App {
                 });
             });
         }
+        self.details_people(ui);
     }
 
     /// Every scene, in order, on a mini rail of its own — the navigator.
@@ -2632,6 +2741,9 @@ impl App {
             Some(Popover::Export) => self.export_window(ctx),
             Some(Popover::Snapshots) => self.snapshots_panel(ctx),
             Some(Popover::Elements) => self.elements_menu(ctx),
+            Some(Popover::Account) => self.account_menu(ctx),
+            Some(Popover::History) => self.history_panel(ctx),
+            Some(Popover::Trash) => self.trash_panel(ctx),
             None => {}
         }
         self.row_menu(ctx);
@@ -2647,6 +2759,8 @@ impl App {
                 theme::TOPBAR_H + 4.0,
             ))
             .show(ctx, |ui| {
+                let team = self.store.team().is_some();
+                let write = self.can_write();
                 ui::popover_frame().show(ui, |ui| {
                     ui.set_width(ui::menu_width(
                         ui,
@@ -2674,22 +2788,33 @@ impl App {
                         self.export(Format::Text, false);
                         self.popover = None;
                     }
-                    if ui::menu_item(ui, &mut rects, "Open the exports folder", Icon::Folder, false) {
+                    // a browser's downloads are the browser's business
+                    if !team && ui::menu_item(ui, &mut rects, "Open the exports folder", Icon::Folder, false) {
                         self.store.open_exports();
                         self.popover = None;
                     }
                     ui::separator(ui);
-                    if ui::menu_item(ui, &mut rects, "Import a script…", Icon::Upload, false) {
+                    if write && ui::menu_item(ui, &mut rects, "Import a script…", Icon::Upload, false) {
                         self.start_import();
                         self.popover = None;
                     }
-                    if ui::menu_item(ui, &mut rects, "Take a snapshot", Icon::Copy, false) {
+                    if write && ui::menu_item(ui, &mut rects, "Take a snapshot", Icon::Copy, false) {
                         self.take_snapshot();
                         self.popover = None;
                     }
                     if ui::menu_item(ui, &mut rects, "Snapshots…", Icon::History, false) {
                         self.popover = Some(Popover::Snapshots);
                         self.popover_frame = self.frame_no;
+                    }
+                    if team {
+                        if ui::menu_item(ui, &mut rects, "History…", Icon::Timeline, false) {
+                            self.popover = Some(Popover::History);
+                            self.popover_frame = self.frame_no;
+                        }
+                        if ui::menu_item(ui, &mut rects, "Recently deleted…", Icon::Trash, false) {
+                            self.popover = Some(Popover::Trash);
+                            self.popover_frame = self.frame_no;
+                        }
                     }
                     ui::separator(ui);
                     if ui::menu_item(ui, &mut rects, "Find and replace", Icon::Search, false) {
@@ -2698,7 +2823,7 @@ impl App {
                         self.find.focus = true;
                         self.popover = None;
                     }
-                    if ui::menu_item(ui, &mut rects, "Rename script", Icon::Pencil, false) {
+                    if write && ui::menu_item(ui, &mut rects, "Rename script", Icon::Pencil, false) && self.guard_edit() {
                         let seed = self.doc.meta.title.clone();
                         self.deck.prompt(
                             "Rename script",
@@ -2710,13 +2835,22 @@ impl App {
                         );
                         self.popover = None;
                     }
-                    if ui::menu_item(ui, &mut rects, "Duplicate", Icon::Copy, false) {
+                    if write && ui::menu_item(ui, &mut rects, "Duplicate", Icon::Copy, false) {
                         if let Some(path) = self.path.clone() {
                             self.duplicate(&path);
                         }
                         self.popover = None;
                     }
-                    let starred = self.doc.meta.starred;
+                    // on a team a star is yours alone, so it lives in the list, not the script
+                    let starred = if team {
+                        self.path
+                            .as_ref()
+                            .and_then(|x| self.entries.iter().find(|e| &e.path == x))
+                            .map(|e| e.starred)
+                            .unwrap_or(false)
+                    } else {
+                        self.doc.meta.starred
+                    };
                     if ui::menu_item(
                         ui,
                         &mut rects,
@@ -2729,17 +2863,19 @@ impl App {
                         }
                         self.popover = None;
                     }
-                    if ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
+                    if !team && ui::menu_item(ui, &mut rects, "Show the file", Icon::FolderOpen, false) {
                         let here = self.path.clone();
                         self.store.reveal(here.as_deref());
                         self.popover = None;
                     }
-                    ui::separator(ui);
-                    if ui::menu_item(ui, &mut rects, "Delete script", Icon::Trash, true) {
-                        if let Some(path) = self.path.clone() {
-                            self.ask_delete(path);
+                    if write {
+                        ui::separator(ui);
+                        if ui::menu_item(ui, &mut rects, "Delete script", Icon::Trash, true) {
+                            if let Some(path) = self.path.clone() {
+                                self.ask_delete(path);
+                            }
+                            self.popover = None;
                         }
-                        self.popover = None;
                     }
                     self.menu_item_rects = rects;
                 });
@@ -3104,7 +3240,7 @@ impl App {
         let p = pal();
         let screen = ctx.screen_rect();
         let before = self.settings.clone();
-        const TABS: [(&str, Icon); 7] = [
+        let mut tabs: Vec<(&str, Icon)> = vec![
             ("Appearance", Icon::Palette),
             ("The page", Icon::File),
             ("Colour", Icon::Eye),
@@ -3113,6 +3249,10 @@ impl App {
             ("YouTrack", Icon::External),
             ("About", Icon::Info),
         ];
+        if self.store.team().is_some() {
+            tabs.push(("Team", Icon::Users));
+        }
+        let tabs = tabs;
 
         // the room behind goes quiet
         let veil = anim::ease(ctx, "ns-settings-veil", true, 0.24);
@@ -3144,7 +3284,7 @@ impl App {
         let t = anim::ease(ctx, "ns-settings-rise", true, 0.30);
         let scale = 0.97 + 0.03 * t;
         let rect = Rect::from_center_size(screen.center(), size * scale);
-        let tab = self.settings_tab.min(TABS.len() - 1);
+        let tab = self.settings_tab.min(tabs.len() - 1);
 
         egui::Area::new(egui::Id::new("ns-settings"))
             .order(egui::Order::Foreground)
@@ -3198,7 +3338,7 @@ impl App {
                 );
                 n.spacing_mut().item_spacing.y = 2.0;
                 let mut picked = None;
-                for (k, (label, icon)) in TABS.iter().enumerate() {
+                for (k, (label, icon)) in tabs.iter().enumerate() {
                     if settings_tab_row(&mut n, label, *icon, k == tab) {
                         picked = Some(k);
                     }
@@ -3232,7 +3372,7 @@ impl App {
                         .layout(Layout::top_down(Align::Min)),
                 );
                 pane_ui.label(
-                    egui::RichText::new(TABS[tab].0)
+                    egui::RichText::new(tabs[tab].0)
                         .font(theme::font_semi(theme::T_H - 1.0))
                         .color(p.text),
                 );
@@ -3265,22 +3405,25 @@ impl App {
         match tab {
             0 => {
             ui::section(ui, "Theme");
-            let mut v = self.settings.match_tesseract;
-            if ui::toggle_row(
-                ui,
-                "Match Tesseract",
-                if tess {
-                    "Take theme, glass and motion from Tesseract, live."
-                } else {
-                    "Tesseract has not been run on this machine yet."
-                },
-                &mut v,
-            ) {
-                self.settings.match_tesseract = v;
-                self.tess_seen = None;
-                self.tess_checked = None;
+            // Tesseract lives on the desktop; a browser has nothing to follow
+            if !crate::WEB {
+                let mut v = self.settings.match_tesseract;
+                if ui::toggle_row(
+                    ui,
+                    "Match Tesseract",
+                    if tess {
+                        "Take theme, glass and motion from Tesseract, live."
+                    } else {
+                        "Tesseract has not been run on this machine yet."
+                    },
+                    &mut v,
+                ) {
+                    self.settings.match_tesseract = v;
+                    self.tess_seen = None;
+                    self.tess_checked = None;
+                }
+                ui.add_space(4.0);
             }
-            ui.add_space(4.0);
             let mut picked = None;
             for t in theme::ThemeId::ALL {
                 if theme_row(ui, t, self.settings.theme == t, !self.settings.light_mode) {
@@ -3316,6 +3459,9 @@ impl App {
                 self.settings.animations = v;
                 self.stop_matching();
             }
+            // the window's blur and glass are the desktop compositor's; a
+            // browser tab is opaque
+            if !crate::WEB {
             ui.add_space(6.0);
             ui.label(
                 egui::RichText::new("Window blur")
@@ -3350,6 +3496,7 @@ impl App {
             if ui::slider(ui, &mut g, 0.35..=1.0) {
                 self.settings.glass_opacity = g;
                 self.stop_matching();
+            }
             }
             ui.add_space(6.0);
             ui.label(
@@ -3501,6 +3648,15 @@ impl App {
             if ui::toggle_row(ui, "Splash screen", "", &mut v) {
                 self.settings.splash = v;
             }
+            if crate::WEB {
+                // in a browser an export is a download, and saving to the team
+                // server keeps its own pace
+                ui.label(
+                    egui::RichText::new("Exports download through your browser. Your work saves to the team library a few seconds after you stop typing, and is kept in this browser until it has.")
+                        .font(theme::font(theme::T_CAP))
+                        .color(p.text_faint),
+                );
+            } else {
             ui.label(
                 egui::RichText::new("After Quick Export")
                     .font(theme::font_med(theme::T_SM))
@@ -3527,6 +3683,7 @@ impl App {
             if ui::slider(ui, &mut ms, 200.0..=5000.0) {
                 self.settings.autosave_ms = (ms / 50.0).round() as u64 * 50;
             }
+            }
 
                         }
             5 => {
@@ -3552,6 +3709,28 @@ impl App {
             }
 
                         }
+            6 if self.store.team().is_some() => {
+            ui::section(ui, "Where things live");
+            ui.label(
+                egui::RichText::new(format!(
+                    "Scripts live in the team library, {}. Nothing is kept on this computer except what has not reached it yet.",
+                    self.store.location()
+                ))
+                .font(theme::font(theme::T_CAP))
+                .color(p.text_faint),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "Page font: {} · Northstar {} · MarkedExiled Software",
+                    theme::PAGE_FONT_NAME,
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .font(theme::font(theme::T_MICRO))
+                .color(p.text_faint),
+            );
+            }
+            TEAM_TAB => self.team_settings(ui),
             6 => {
             ui::section(ui, "Where things live");
             ui.label(
@@ -3602,23 +3781,28 @@ impl App {
         let hit =
             |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
 
-        if hit(Modifiers::COMMAND, Key::S) {
+        if hit(Modifiers::COMMAND, Key::S) && self.guard_edit() {
             self.save(true);
             self.deck.ok("Saved", "");
         }
-        if hit(Modifiers::COMMAND, Key::N) {
+        // A browser keeps Ctrl+N for a new window and never hands it over, so
+        // the web build takes Ctrl+Alt+N as well (checked first: egui lets an
+        // extra Alt through to the plainer chord).
+        if ((crate::WEB && hit(Modifiers::COMMAND | Modifiers::ALT, Key::N)) || hit(Modifiers::COMMAND, Key::N))
+            && self.can_write()
+        {
             self.new_script();
         }
-        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || hit(Modifiers::COMMAND, Key::Y) {
+        if (hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || hit(Modifiers::COMMAND, Key::Y)) && self.guard_edit() {
             self.redo();
         }
-        if hit(Modifiers::COMMAND, Key::Z) {
+        if hit(Modifiers::COMMAND, Key::Z) && self.guard_edit() {
             self.undo();
         }
         if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::F) {
             self.settings.show_library = true;
             self.focus_search = true;
-        } else if hit(Modifiers::COMMAND, Key::F) || hit(Modifiers::COMMAND, Key::H) {
+        } else if (hit(Modifiers::COMMAND, Key::F) || hit(Modifiers::COMMAND, Key::H)) && self.guard_edit() {
             self.mode = Mode::Write;
             self.find.open = true;
             self.find.focus = true;
@@ -3646,10 +3830,10 @@ impl App {
         if hit(Modifiers::COMMAND, Key::Period) {
             self.focus_mode = !self.focus_mode;
         }
-        if hit(Modifiers::COMMAND, Key::G) {
+        if hit(Modifiers::COMMAND, Key::G) && self.guard_edit() {
             self.mode = Mode::from_index((self.mode.index() + 1) % 3);
         }
-        if hit(Modifiers::COMMAND, Key::Enter) {
+        if hit(Modifiers::COMMAND, Key::Enter) && self.guard_edit() {
             self.new_scene();
         }
         let mut px = None;
@@ -3675,7 +3859,11 @@ impl App {
             Key::Num7,
         ];
         for (i, k) in DIGITS.iter().enumerate() {
-            if hit(Modifiers::COMMAND, *k) {
+            // Ctrl+1–7 switch tabs in a browser; Alt+1–7 there as well
+            if (crate::WEB && hit(Modifiers::ALT, *k)) || hit(Modifiers::COMMAND, *k) {
+                if !self.guard_edit() {
+                    continue;
+                }
                 if let Some(e) = Element::from_digit(i + 1) {
                     if editor::set_element(&mut self.doc, &mut self.ed, e) {
                         self.mark_changed();
@@ -3692,6 +3880,25 @@ impl App {
             } else if self.focus_mode {
                 self.focus_mode = false;
             }
+        }
+    }
+
+    /// Keys on the script picker.
+    fn home_shortcuts(&mut self, ctx: &egui::Context) {
+        use egui::{Key, KeyboardShortcut, Modifiers};
+        let hit =
+            |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
+        if (hit(Modifiers::COMMAND | Modifiers::ALT, Key::N) || hit(Modifiers::COMMAND, Key::N)) && self.can_write() {
+            self.new_script();
+        }
+        if hit(Modifiers::COMMAND, Key::Comma) {
+            self.toggle_popover(Popover::Settings);
+        }
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.popover = None;
+        }
+        if self.popover.is_none() {
+            self.home_keys(ctx);
         }
     }
 
@@ -3828,7 +4035,11 @@ impl App {
         }
 
         if !self.deck.asking() {
-            self.shortcuts(ctx);
+            if self.home {
+                self.home_shortcuts(ctx);
+            } else {
+                self.shortcuts(ctx);
+            }
         }
 
         self.take_arrivals(ctx);
@@ -3839,6 +4050,7 @@ impl App {
         if self.store.busy() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
+        self.keep_read_only();
 
         // the centre page eases in whenever it changes what it is showing
         let key = format!(
@@ -3858,10 +4070,14 @@ impl App {
         self.refresh_layout(false);
 
         self.top_panel(ctx);
-        self.browser(ctx);
-        self.aside(ctx);
-        self.page(ctx);
-        self.find_bar(ctx);
+        if self.home {
+            self.home_screen(ctx);
+        } else {
+            self.browser(ctx);
+            self.aside(ctx);
+            self.page(ctx);
+            self.find_bar(ctx);
+        }
         self.popovers(ctx);
         chrome::resize_handles(ctx);
 
@@ -4046,6 +4262,49 @@ impl App {
     }
     pub fn debug_session_words(&self) -> i64 {
         self.session_words
+    }
+    pub fn is_home(&self) -> bool {
+        self.home
+    }
+    pub fn access(&self) -> &Access {
+        &self.access
+    }
+    pub fn debug_open_from_home(&mut self, path: PathBuf) {
+        self.open_from_home(path);
+    }
+    pub fn debug_go_home(&mut self) {
+        self.go_home();
+    }
+    pub fn debug_lock_free(&self) -> bool {
+        self.lock_free
+    }
+    pub fn debug_edit_now(&mut self) {
+        if let Some(path) = self.path.clone() {
+            self.opening = Some(path.clone());
+            self.store.request_edit(&path);
+        }
+    }
+    pub fn debug_toggle_star(&mut self, path: &Path) {
+        self.toggle_star(path);
+    }
+    pub fn debug_new_script(&mut self) {
+        self.new_script();
+    }
+    pub fn debug_open_settings(&mut self, tab: usize) {
+        self.settings_tab = tab;
+        self.popover = Some(Popover::Settings);
+        self.popover_frame = self.frame_no;
+    }
+    pub fn debug_open_popover_history(&mut self) {
+        self.popover = Some(Popover::History);
+        self.popover_frame = self.frame_no;
+    }
+    pub fn debug_open_popover_trash(&mut self) {
+        self.popover = Some(Popover::Trash);
+        self.popover_frame = self.frame_no;
+    }
+    pub fn debug_home_order(&self) -> Vec<PathBuf> {
+        self.home_order.clone()
     }
 }
 
