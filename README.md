@@ -60,6 +60,9 @@ line to add.
 **Upgrading** from the first Northstar: `git pull` (or re-clone) and run
 `./install.sh` again. It replaces `~/.local/bin/northstar` in place. Your
 scripts are untouched and open exactly as before — the file format only grew.
+Before every install it also copies your whole library (scripts, snapshots,
+settings) to `~/.local/share/northstar-backup-<date>`. It only copies: nothing
+in your library is moved or changed. Delete old copies whenever you like.
 
 **Uninstalling:** `./install.sh --uninstall`. Your scripts stay in
 `~/.local/share/northstar`.
@@ -346,10 +349,26 @@ and goes.
 
 ---
 
+## For a team: Northstar Web
+
+The same app runs in a browser for a whole team, on one shared library, with
+Discord sign-in, a script picker, who-edited-what history and one editor per
+script. That lives in its own repository,
+[northstarWeb](https://github.com/exiledddev/northstarWeb), which builds this
+code for the browser.
+
+The desktop app is not changed by it. It never talks to a server, and your
+library folder stays exactly as it is. To move scripts to the team, import
+them in the browser: that uploads copies.
+
+---
+
 ## Development
 
 ```bash
-cargo test          # 69 tests: behaviour, files, formats, and headless UI
+cargo test          # 80 tests: behaviour, files, formats, headless UI, team screens
+cargo build --lib --target wasm32-unknown-unknown   # the library builds for the browser too
+cargo run --example team_demo                       # the team screens, no server needed
 cargo build --release
 ./target/release/northstar --emit-icon icon.svg   # the mark, as the app draws it
 ```
@@ -361,6 +380,8 @@ Tesseract theme-following are all exercised for real.
 
 | File | Contents |
 |---|---|
+| `src/lib.rs` / `src/main.rs` | The app is a library; the desktop binary runs it on a window |
+| `src/backend.rs` | The `Store` trait the app reads and writes through; `LocalBackend` is the library folder |
 | `src/model.rs` | Elements, indents, blocks, scenes, cast, word wrap, paste guessing, SmartType |
 | `src/storage.rs` | The library folder, markdown read/write, snapshots, settings, import |
 | `src/export.rs` | Line composition, pagination, page map, scene lengths, PDF/FDX/Fountain/text |
@@ -368,6 +389,7 @@ Tesseract theme-following are all exercised for real.
 | `src/editor.rs` | The page: block rendering and every structural keystroke |
 | `src/cards.rs` / `src/pages.rs` | Cards, and Reading mode |
 | `src/app.rs` | Shell — ribbon, library, navigator, popovers, autosave, undo |
+| `src/app/home.rs` `src/app/team.rs` `src/people.rs` | The team edition's screens: Home, read-only scripts, History, the Team tab, avatars. Shown only for a team library |
 | `src/theme.rs` `anim.rs` `ui.rs` `icons.rs` `alerts.rs` `chrome.rs` `blur.rs` `splash.rs` | The design system, kept in step with Tesseract's |
 | `src/logo.rs` | The mark and the launcher icon |
 | `src/caret.rs` | The only place that touches egui's text-cursor internals |
@@ -377,4 +399,6 @@ egui and the text cursor API has shifted, `src/caret.rs` is the only file that
 needs attention.
 
 MIT licensed. Outfit and Courier Prime are bundled under the SIL Open Font
-License; see `assets/fonts/`.
+License; see `assets/fonts/`. printpdf 0.7.0 is vendored (MIT) with a
+two-line fix so it also builds for the browser; see
+`vendor/printpdf/VENDORED.md`.
