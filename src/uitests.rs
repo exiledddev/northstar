@@ -861,3 +861,58 @@ fn the_export_window_exports_the_pages_asked_for() {
     // and the choices on the page are remembered
     assert!(storage::read_settings().pdf_title_page);
 }
+
+#[test]
+fn the_desktop_makes_no_acts_and_ctrl_shift_enter_is_still_a_new_scene() {
+    let mut h = Harness::new();
+    h.load(three_scenes());
+    let in_first = h.app.doc().blocks[2].id;
+    h.focus(in_first);
+    h.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(h.app.doc().acts().is_empty(), "acts are made on a team library only, for now");
+    assert_eq!(h.app.doc().scenes().len(), 4, "the chord does what it always did");
+}
+
+#[test]
+fn a_script_with_acts_shows_them_everywhere_on_the_desktop_too() {
+    let mut h = Harness::new();
+    let mut d = three_scenes();
+    let act = d.new_block(Element::Act, "ACT ONE");
+    d.blocks.insert(0, act);
+    let act = d.new_block(Element::Act, "");
+    d.blocks.insert(4, act);
+    h.load(d);
+    for mode in [Mode::Write, Mode::Cards, Mode::Read] {
+        h.app.set_mode(mode);
+        h.frames(3);
+    }
+    h.app.settings_mut().show_scenes = true;
+    h.app.set_mode(Mode::Write);
+    h.frames(3);
+    // Enter in an act's title starts its first scene; Tab leaves it an act
+    let first = h.app.doc().blocks[0].id;
+    h.focus(first);
+    h.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(h.app.doc().blocks[0].element, Element::Act);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(h.app.doc().blocks[0].text, "ACT ONE", "the title is never split");
+    assert_eq!(h.app.doc().blocks[1].element, Element::SceneHeading);
+    assert_eq!(h.app.doc().blocks[1].text, "");
+}
+
+#[test]
+fn the_desktop_offers_no_colour_picker() {
+    let mut h = Harness::with(1320.0, 900.0, "character_colors = yes\nshow_cast = yes\n");
+    let mut d = three_scenes();
+    d.meta.set_voice("DETECTIVE COLE", Some(200));
+    h.load(d);
+    h.app.debug_open_voice_picker("DETECTIVE COLE");
+    h.frames(2);
+    assert!(!h.app.debug_voice_picker_open(), "choosing colours is the team edition's, for now");
+    // a colour chosen on the web only shows once Custom is on
+    let voices = h.app.debug_voices().unwrap();
+    assert_eq!(voices["DETECTIVE COLE"], crate::theme::character_colors(&["DETECTIVE COLE".to_string()], 0)["DETECTIVE COLE"]);
+    h.app.debug_open_settings(2);
+    h.frames(3);
+    assert!(!h.app.settings().custom_colors);
+}

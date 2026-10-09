@@ -215,10 +215,24 @@ fn main() -> eframe::Result<()> {
         (
             PathBuf::from("long-way-down"),
             script("The Long Way Down", "A. Writer", &[
+                (Act, "COLD OPEN"),
                 (SceneHeading, "INT. WAREHOUSE - NIGHT"),
                 (Action, "Rain hammers the corrugated roof. MARIA moves between the crates."),
                 (Character, "MARIA"),
                 (Dialogue, "Three, four... there you are."),
+                (Act, "ACT ONE"),
+                (SceneHeading, "EXT. HARBOUR - DAWN"),
+                (Action, "Gulls over black water. COLE waits by the bollard, collar up."),
+                (Character, "COLE"),
+                (Dialogue, "You said six."),
+                (Character, "MARIA"),
+                (Parenthetical, "(not stopping)"),
+                (Dialogue, "I said six-ish."),
+                (SceneHeading, "INT. CAR - MOVING - DAY"),
+                (Action, "The wipers lose the argument."),
+                (Act, "ACT TWO"),
+                (SceneHeading, "INT. DINER - NIGHT"),
+                (Action, "A booth by the window. Two coffees nobody drinks."),
             ]),
             Some(sam.clone()),
             None,
@@ -256,7 +270,11 @@ fn main() -> eframe::Result<()> {
         team,
         docs,
         starred: vec![PathBuf::from("long-way-down")],
-        settings: Settings::parse("splash = no\n"),
+        // NS_DEMO_SETTINGS adds lines to the settings, e.g. "theme = zen"
+        settings: Settings::parse(&format!(
+            "splash = no\n{}\n",
+            std::env::var("NS_DEMO_SETTINGS").unwrap_or_default().replace(';', "\n")
+        )),
     };
 
     let options = eframe::NativeOptions {

@@ -23,7 +23,7 @@ use crate::editor::{self, Caret, EditorState};
 use crate::export::{self, Format};
 use crate::icons::{self, Icon};
 use crate::logo;
-use crate::model::{eighths_label, CastMember, Document, Element};
+use crate::model::{act_title, eighths_label, CastMember, Document, Element};
 use crate::pages::{self, PagesState};
 use crate::settings::{AfterExport, BlurMode, Settings, SortBy};
 use crate::splash::Splash;
@@ -33,6 +33,7 @@ use crate::ui;
 
 mod home;
 mod team;
+mod voices;
 
 const SNAPSHOT_IDLE: Duration = Duration::from_millis(700);
 
@@ -100,6 +101,8 @@ struct Layout2 {
     pages: usize,
     words: usize,
     scenes: usize,
+    /// What each act says about itself, by act block id: its scenes and pages.
+    acts: HashMap<u64, String>,
     cast: Vec<CastMember>,
     /// Everyone who speaks, in order of first appearance — the order their
     /// colours are dealt out in.
@@ -206,6 +209,8 @@ pub struct App {
     words_seen: Option<(PathBuf, usize)>,
     /// Which of each character's cues was jumped to last.
     cast_cursor: HashMap<String, usize>,
+    /// The character colour picker, when it is open.
+    voice_pick: Option<voices::Pick>,
 
     deck: alerts::Deck<Ask>,
     popover: Option<Popover>,
@@ -347,6 +352,7 @@ impl App {
             session_words: 0,
             words_seen: None,
             cast_cursor: HashMap::new(),
+            voice_pick: None,
             deck: alerts::Deck::default(),
             popover: None,
             popover_frame: 0,
@@ -677,11 +683,13 @@ impl App {
         if !(self.layout_stale && (stale_enough || now)) {
             return;
         }
-        let starts = export::page_starts(&self.doc);
+        let starts: HashMap<u64, usize> = export::page_starts(&self.doc).into_iter().map(|(n, id)| (id, n)).collect();
         let lengths = export::scene_lengths(&self.doc);
+        let pages = export::page_count(&self.doc);
         self.layout = Layout2 {
-            page_starts: starts.into_iter().map(|(n, id)| (id, n)).collect(),
-            pages: export::page_count(&self.doc),
+            acts: editor::act_notes(&self.doc, &starts, pages),
+            page_starts: starts,
+            pages,
             lengths: lengths.into_iter().map(|(id, pg, e)| (id, (pg, e))).collect(),
             words: self.doc.word_count(),
             scenes: self.doc.scene_count(),
@@ -710,7 +718,7 @@ impl App {
             scene_numbers: self.settings.pdf_scene_numbers,
             pages,
             voices: if self.settings.pdf_character_colors {
-                Some(theme::character_inks(&self.layout.speakers, self.settings.colour_seed))
+                Some(theme::voice_inks(&self.layout.speakers, self.settings.colour_seed, self.chosen_voices()))
             } else {
                 None
             },
@@ -857,6 +865,48 @@ impl App {
         self.doc.blocks.insert(at, b);
         self.mode = Mode::Write;
         self.ed.focus(id, Caret::Start);
+        self.ed.scroll_to_focus = true;
+        self.mark_changed();
+        self.snapshot_due = false;
+        self.baseline = self.doc.clone();
+    }
+
+    /// A new act, starting at the scene the caret is in. It is called after
+    /// its place (ACT TWO…), and the acts after it that still carry their
+    /// given name move up one, so the numbers keep running in order. The
+    /// caret lands in its title, ready to rename it TEASER or COLD OPEN.
+    fn new_act(&mut self) {
+        let focus = self.ed.focus_block;
+        let at_block = focus.and_then(|id| self.doc.index_of(id));
+        let at = match (focus.and_then(|id| self.doc.scene_of(id)), at_block) {
+            // before the heading of the scene being written
+            (Some(k), _) => self.doc.scenes()[k].start,
+            // in an act's title: the next act, after this one
+            (None, Some(i)) if self.doc.blocks[i].element == Element::Act => self
+                .doc
+                .act_of(self.doc.blocks[i].id)
+                .and_then(|k| self.doc.acts().get(k).map(|a| a.end))
+                .unwrap_or(self.doc.blocks.len()),
+            // before the first heading: where the caret is
+            (None, Some(i)) => i,
+            (None, None) => self.doc.blocks.len(),
+        };
+        self.checkpoint();
+        let before = self.doc.blocks[..at].iter().filter(|b| b.element == Element::Act).count();
+        // the acts after it that still have their given names move up one
+        let mut n = before + 1;
+        for b in self.doc.blocks[at..].iter_mut().filter(|b| b.element == Element::Act) {
+            if b.text.trim() == act_title(n) {
+                b.text = act_title(n + 1);
+            }
+            n += 1;
+        }
+        let title = act_title(before + 1);
+        let b = self.doc.new_block(Element::Act, &title);
+        let id = b.id;
+        self.doc.blocks.insert(at, b);
+        self.mode = Mode::Write;
+        self.ed.focus(id, editor::Caret::Range(0, title.chars().count()));
         self.ed.scroll_to_focus = true;
         self.mark_changed();
         self.snapshot_due = false;
@@ -1026,7 +1076,7 @@ impl App {
     /// Each speaker's colour, if characters are wearing colours at all.
     fn voices(&self) -> Option<HashMap<String, Color32>> {
         if self.settings.character_colors {
-            Some(theme::character_colors(&self.layout.speakers, self.settings.colour_seed))
+            Some(theme::voice_colors(&self.layout.speakers, self.settings.colour_seed, self.chosen_voices()))
         } else {
             None
         }
@@ -1237,7 +1287,8 @@ impl App {
         let p = pal();
         ui.spacing_mut().item_spacing.x = 3.0;
         let current = self.ed.current_element(&self.doc);
-        let wide = room > 400.0 + 110.0 + 120.0;
+        let acts = self.team_edition() && self.can_write();
+        let wide = room > 400.0 + 110.0 + 120.0 + if acts { 104.0 } else { 0.0 };
         let mut wanted: Option<Element> = None;
         if wide {
             for e in Element::ALL {
@@ -1261,6 +1312,18 @@ impl App {
         }
         ui.add_space(6.0);
         ui.spacing_mut().item_spacing.x = 6.0;
+        if acts
+            && ui::ribbon_button(
+                ui,
+                Icon::Star4,
+                "New act",
+                "A new act, starting at the scene you are in  ·  Ctrl+Shift+Enter",
+                false,
+            )
+            && self.guard_edit()
+        {
+            self.new_act();
+        }
         if ui::ribbon_button(
             ui,
             Icon::Print,
@@ -1960,7 +2023,7 @@ impl App {
         ui::separator(ui);
         ui::section(ui, "The script");
         let l = &self.layout;
-        let rows = [
+        let mut rows = vec![
             ("Pages", format!("{}", l.pages)),
             ("Running time", format!("about {} min", l.pages)),
             ("Scenes", format!("{}", l.scenes)),
@@ -1968,6 +2031,9 @@ impl App {
             ("Words", format!("{}", l.words)),
             ("Dialogue", format!("{:.0}%", l.dialogue * 100.0)),
         ];
+        if !l.acts.is_empty() {
+            rows.insert(2, ("Acts", format!("{}", l.acts.len())));
+        }
         for (k, v) in rows {
             ui.horizontal(|ui| {
                 ui.add_space(2.0);
@@ -1993,6 +2059,7 @@ impl App {
     fn scene_outliner(&mut self, ui: &mut egui::Ui) {
         let p = pal();
         let scenes = self.doc.scenes();
+        let acts = self.doc.acts();
         let live = self.ed.focus_block.and_then(|id| self.doc.scene_of(id));
 
         ui.horizontal(|ui| {
@@ -2034,7 +2101,17 @@ impl App {
                 let mut dots: Vec<f32> = Vec::new();
 
                 ui.spacing_mut().item_spacing.y = 2.0;
+                let mut next_act = 0usize;
                 for (i, sc) in scenes.iter().enumerate() {
+                    // each act heads the scenes in it
+                    while let Some(a) = acts.get(next_act).filter(|a| a.start < sc.start) {
+                        let (cy, clicked) = self.outline_act(ui, a, left, text_left);
+                        if clicked {
+                            jump = Some(a.id);
+                        }
+                        dots.push(cy);
+                        next_act += 1;
+                    }
                     let w = ui.available_width();
                     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 38.0), Sense::click());
                     let is_live = live == Some(i);
@@ -2128,6 +2205,15 @@ impl App {
                     }
                 }
 
+                // acts with no scenes yet still have their place
+                for a in &acts[next_act.min(acts.len())..] {
+                    let (cy, clicked) = self.outline_act(ui, a, left, text_left);
+                    if clicked {
+                        jump = Some(a.id);
+                    }
+                    dots.push(cy);
+                }
+
                 // the mini rail, broken around each star
                 let mut shapes = Vec::new();
                 let gap = 9.0;
@@ -2154,6 +2240,61 @@ impl App {
             self.mode = Mode::Write;
             self.ed.jump_to(id);
         }
+    }
+
+    /// An act in the navigator: a slim header over its scenes, its star in the
+    /// primary gradient where a scene's is in the secondary. Returns the
+    /// header's middle, for the rail, and whether it was clicked.
+    fn outline_act(&self, ui: &mut egui::Ui, a: &crate::model::ActSpan, left: f32, text_left: f32) -> (f32, bool) {
+        let p = pal();
+        let w = ui.available_width();
+        if a.number > 1 || ui.min_rect().height() > 1.0 {
+            ui.add_space(6.0);
+        }
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::click());
+        let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
+        let cy = rect.center().y;
+        // a faint band in both gradients, as the act's divider has
+        let band = rect.shrink2(Vec2::new(0.0, 2.0));
+        theme::fill_grad_poly(
+            ui.painter(),
+            &theme::rounded_poly(band, theme::R_SM),
+            theme::wash(p.primary, ((if p.dark { 26.0 } else { 20.0 }) + 16.0 * hot) as u8),
+            theme::wash(p.sec, 0),
+            Vec2::new(1.0, 0.0),
+        );
+        theme::grad_star(ui.painter(), Pos2::new(left, cy), 6.2 + 0.6 * hot, p.prim_grad.0, p.prim_grad.1);
+        let title = if a.title.trim().is_empty() { act_title(a.number) } else { a.title.trim().to_string() };
+        let room = rect.right() - text_left - 8.0;
+        let pages = self
+            .layout
+            .acts
+            .get(&a.id)
+            .and_then(|n| n.rsplit(" \u{b7} ").next())
+            .unwrap_or("")
+            .to_string();
+        let used = theme::tracked_text(
+            ui.painter(),
+            Pos2::new(text_left, cy),
+            &ui::elide(&title, (room / 9.0) as usize),
+            theme::font_semi(theme::T_CAP),
+            theme::mix(p.text, p.primary_light, 0.25 + 0.25 * hot),
+            1.6,
+        );
+        if !pages.is_empty() && text_left + used + 60.0 < rect.right() {
+            ui.painter().text(
+                Pos2::new(rect.right() - 6.0, cy),
+                egui::Align2::RIGHT_CENTER,
+                pages,
+                theme::font_mono(theme::T_MICRO),
+                p.text_faint,
+            );
+        }
+        let resp = resp.on_hover_text("Go to this act");
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        (cy, resp.clicked())
     }
 
     /// Everyone who speaks, and the balance of talk to action.
@@ -2187,6 +2328,8 @@ impl App {
         }
 
         let mut jump: Option<(String, u64)> = None;
+        let mut pick: Option<(String, Pos2)> = None;
+        let choose = self.can_choose_voices();
         let cast = self.layout.cast.clone();
         let voices = self.voices();
         // How much of the script is talk, straight under the heading — a
@@ -2230,14 +2373,26 @@ impl App {
                             theme::wash(p.primary, (30.0 * hot) as u8),
                         );
                     }
-                    ui.painter().circle_filled(
-                        Pos2::new(rect.left() + 12.0, rect.center().y),
-                        3.0,
-                        voices
-                            .as_ref()
-                            .and_then(|v| v.get(&c.name).copied())
-                            .unwrap_or_else(|| p.group(k)),
-                    );
+                    let dot = Pos2::new(rect.left() + 12.0, rect.center().y);
+                    let colour = voices
+                        .as_ref()
+                        .and_then(|v| v.get(&c.name).copied())
+                        .unwrap_or_else(|| p.group(k));
+                    if choose {
+                        // a swatch: click it to choose their colour
+                        let hit = Rect::from_center_size(dot, Vec2::splat(18.0));
+                        let sr = ui.interact(hit, resp.id.with("swatch"), Sense::click());
+                        let on = anim::ease(ui.ctx(), sr.id, sr.hovered(), anim::HOVER);
+                        ui.painter().circle_filled(dot, 4.2 + 1.2 * on, colour);
+                        if on > 0.02 {
+                            ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2, theme::wash(colour, (200.0 * on) as u8)));
+                        }
+                        if sr.on_hover_text("Choose their colour").clicked() {
+                            pick = Some((c.name.clone(), hit.left_bottom()));
+                        }
+                    } else {
+                        ui.painter().circle_filled(dot, 3.0, colour);
+                    }
                     ui.painter().text(
                         Pos2::new(rect.left() + 24.0, rect.center().y),
                         egui::Align2::LEFT_CENTER,
@@ -2268,7 +2423,9 @@ impl App {
                     }
                 }
             });
-        if let Some((name, id)) = jump {
+        if let Some((name, at)) = pick {
+            self.open_voice_picker(&name, at);
+        } else if let Some((name, id)) = jump {
             *self.cast_cursor.entry(name).or_insert(0) += 1;
             self.mode = Mode::Write;
             self.ed.jump_to(id);
@@ -2345,6 +2502,7 @@ impl App {
                     current,
                     element_colors: self.settings.element_colors,
                     char_colors: voices.as_ref(),
+                    pages: self.layout.pages,
                 };
                 ui.horizontal(|ui| {
                     ui.add_space(pad);
@@ -2503,12 +2661,13 @@ impl App {
             .and_then(|id| self.doc.scene_of(id))
             .and_then(|k| self.doc.scenes().get(k).map(|s| s.id));
         let lengths = self.layout.lengths.clone();
+        let act_notes = self.layout.acts.clone();
         let mut out = cards::Out { changed: false, act: None };
         egui::ScrollArea::vertical()
             .id_salt("ns-cards")
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                out = cards::show(ui, &mut self.doc, &mut self.cards, &lengths, live, self.frame_no);
+                out = cards::show(ui, &mut self.doc, &mut self.cards, &lengths, &act_notes, live, self.frame_no);
             });
         if out.changed {
             self.mark_changed();
@@ -2537,6 +2696,10 @@ impl App {
                 }
             }
             Some(cards::Act::Delete(n)) => self.ask_delete_scene(n),
+            Some(cards::Act::OpenAct(id)) => {
+                self.mode = Mode::Write;
+                self.ed.jump_to(id);
+            }
             Some(cards::Act::NewScene) => {
                 // at the very end, as the card sits at the end of the wall
                 self.checkpoint();
@@ -2751,6 +2914,8 @@ impl App {
             ctx.animate_bool_with_time(egui::Id::new("ns-export-veil"), false, 0.0);
             ctx.animate_bool_with_time(egui::Id::new("ns-export-rise"), false, 0.0);
         }
+        // over everything, Settings included, and first to hear Esc
+        self.voice_picker(ctx);
         match self.popover {
             Some(Popover::Menu) => self.more_menu(ctx),
             Some(Popover::Settings) => self.settings_panel(ctx),
@@ -2833,6 +2998,12 @@ impl App {
                         }
                     }
                     ui::separator(ui);
+                    if team && write && ui::menu_item(ui, &mut rects, "New act", Icon::Star4, false) {
+                        if self.guard_edit() {
+                            self.new_act();
+                        }
+                        self.popover = None;
+                    }
                     if ui::menu_item(ui, &mut rects, "Find and replace", Icon::Search, false) {
                         self.mode = Mode::Write;
                         self.find.open = true;
@@ -3156,7 +3327,7 @@ impl App {
                 }
                 if self.settings.pdf_character_colors {
                     // the inks, as they will print, on a scrap of paper
-                    let inks = theme::character_inks(&self.layout.speakers, self.settings.colour_seed);
+                    let inks = theme::voice_inks(&self.layout.speakers, self.settings.colour_seed, self.chosen_voices());
                     let names: Vec<String> = self.layout.speakers.iter().take(6).cloned().collect();
                     let (strip, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::hover());
                     ui.painter().rect_filled(strip, egui::Rounding::same(theme::R_SM), Color32::WHITE);
@@ -3579,6 +3750,10 @@ impl App {
                 if ui::toggle_row(ui, "…in Reading mode too", "", &mut v) {
                     self.settings.character_colors_reading = v;
                 }
+                if self.team_edition() {
+                    self.colour_mode_settings(ui);
+                }
+                if !self.settings.custom_colors {
                 ui.horizontal(|ui| {
                     // a live sample of the first few speakers
                     let voices = theme::character_colors(
@@ -3598,6 +3773,7 @@ impl App {
                         }
                     });
                 });
+                }
             }
 
                         }
@@ -3851,7 +4027,13 @@ impl App {
         if hit(Modifiers::COMMAND, Key::G) && self.guard_edit() {
             self.mode = Mode::from_index((self.mode.index() + 1) % 3);
         }
-        if hit(Modifiers::COMMAND, Key::Enter) && self.guard_edit() {
+        // a new act is the team edition's, for now (checked first: egui lets
+        // an extra Shift through to the plainer chord)
+        if self.team_edition() && hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter) {
+            if self.guard_edit() {
+                self.new_act();
+            }
+        } else if hit(Modifiers::COMMAND, Key::Enter) && self.guard_edit() {
             self.new_scene();
         }
         let mut px = None;
@@ -3952,6 +4134,13 @@ impl App {
                 }
             }
         }
+    }
+
+    /// A team library, in the browser: where acts and chosen character
+    /// colours can be made, for now. The desktop shows them in any script
+    /// that has them, but does not make them.
+    fn team_edition(&self) -> bool {
+        self.store.team().is_some()
     }
 
     /// May anything be written to this library at all? Viewers on a team may
@@ -4323,6 +4512,21 @@ impl App {
     }
     pub fn debug_home_order(&self) -> Vec<PathBuf> {
         self.home_order.clone()
+    }
+    pub fn debug_open_voice_picker(&mut self, name: &str) {
+        self.open_voice_picker(name, Pos2::new(400.0, 300.0));
+    }
+    pub fn debug_voice_picker_open(&self) -> bool {
+        self.voice_pick.is_some()
+    }
+    pub fn debug_set_voice(&mut self, name: &str, hue: Option<u16>) {
+        self.set_voice(name, hue);
+    }
+    pub fn debug_voices(&self) -> Option<HashMap<String, Color32>> {
+        self.voices()
+    }
+    pub fn debug_pdf_inks(&self) -> Option<HashMap<String, export::Ink>> {
+        self.pdf_options(None).voices
     }
 }
 

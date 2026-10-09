@@ -361,12 +361,30 @@ The desktop app is not changed by it. It never talks to a server, and your
 library folder stays exactly as it is. To move scripts to the team, import
 them in the browser: that uploads copies.
 
+Two things are made only in the browser, for now:
+
+- **Acts.** *New act* (or Ctrl+Shift+Enter) starts an act at the scene you
+  are in. In the script it is a wide divider with its own constellation; in
+  print every act starts a new page with its title centred, bold and
+  underlined, and closes with a centred `END OF ACT ONE`. In the file it is a
+  level-one heading, `# ACT ONE`. Fountain and Final Draft carry acts both
+  ways.
+- **Chosen character colours.** Character colours can be *Random* (dealt from
+  the wheel, as before) or *Custom*: click a character's colour in the Cast
+  panel or in Settings → Colour and choose one, and they keep it everywhere,
+  on paper too. The choice is kept in the script's front matter
+  (`voices: MARIA=212; COLE=24`), so the whole team sees it.
+
+The desktop app shows both in any script that has them, so a script from the
+team opens properly anywhere. It doesn't offer to make them yet. Scripts
+without acts or chosen colours are written exactly as before.
+
 ---
 
 ## Development
 
 ```bash
-cargo test          # 80 tests: behaviour, files, formats, headless UI, team screens
+cargo test          # 97 tests: behaviour, files, formats, headless UI, team screens
 cargo build --lib --target wasm32-unknown-unknown   # the library builds for the browser too
 cargo run --example team_demo                       # the team screens, no server needed
 cargo build --release
@@ -390,6 +408,7 @@ Tesseract theme-following are all exercised for real.
 | `src/cards.rs` / `src/pages.rs` | Cards, and Reading mode |
 | `src/app.rs` | Shell — ribbon, library, navigator, popovers, autosave, undo |
 | `src/app/home.rs` `src/app/team.rs` `src/people.rs` | The team edition's screens: Home, read-only scripts, History, the Team tab, avatars. Shown only for a team library |
+| `src/app/voices.rs` | Choosing character colours: Random or Custom, the colour picker. Team library only |
 | `src/theme.rs` `anim.rs` `ui.rs` `icons.rs` `alerts.rs` `chrome.rs` `blur.rs` `splash.rs` | The design system, kept in step with Tesseract's |
 | `src/logo.rs` | The mark and the launcher icon |
 | `src/caret.rs` | The only place that touches egui's text-cursor internals |

@@ -229,7 +229,7 @@ pub fn show(
             }
             let y = body_top + row as f32 * line_h;
             let x = text_left + line.indent as f32 * char_w;
-            let is_heading = matches!(line.element, Some(Element::SceneHeading));
+            let is_heading = matches!(line.element, Some(Element::SceneHeading) | Some(Element::Act));
             let color = match (speaking[n - 1][row], line.element) {
                 (Some(v), _) => v,
                 (None, Some(Element::Parenthetical)) | (None, Some(Element::Transition)) => {
@@ -259,13 +259,21 @@ pub fn show(
                     jump = Some(block);
                 }
             }
-            ui.painter().text(
+            let drawn = ui.painter().text(
                 Pos2::new(x, y),
                 egui::Align2::LEFT_TOP,
                 &line.text,
                 if is_heading { bold.clone() } else { font.clone() },
                 a(color),
             );
+            // an act's title and its close are underlined, as they print
+            if line.element == Some(Element::Act) {
+                let under = y + line_h * 0.92;
+                ui.painter().line_segment(
+                    [Pos2::new(drawn.left(), under), Pos2::new(drawn.right(), under)],
+                    egui::Stroke::new((line_h * 0.06).max(0.8), a(color)),
+                );
+            }
             if scene_numbers {
                 if let Some(num) = line.scene {
                     let label = format!("{num}");

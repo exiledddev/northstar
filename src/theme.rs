@@ -1441,6 +1441,7 @@ pub fn element_color(e: Element) -> Color32 {
         Element::Dialogue => p.group(2),
         Element::Transition => p.group(4),
         Element::Shot => p.group(5),
+        Element::Act => p.primary_light,
     }
 }
 
@@ -1449,8 +1450,9 @@ pub fn element_color(e: Element) -> Color32 {
 pub fn element_band(e: Element) -> Color32 {
     let p = pal();
     match e {
-        // action is most of any script: it carries no band at all
-        Element::Action => Color32::TRANSPARENT,
+        // action is most of any script: it carries no band at all, and an
+        // act draws its own
+        Element::Action | Element::Act => Color32::TRANSPARENT,
         _ => tint(element_color(e), if p.dark { 0.035 } else { 0.05 }),
     }
 }
@@ -1473,19 +1475,61 @@ pub fn tint(col: Color32, k: f32) -> Color32 {
 /// far apart and a new character never repaints the ones before it. `seed`
 /// turns the whole wheel, for Settings' Shuffle.
 pub fn character_colors(names: &[String], seed: u32) -> std::collections::HashMap<String, Color32> {
-    let p = pal();
-    let (s, l) = if p.dark { (0.62, 0.72) } else { (0.66, 0.36) };
-    voices_at(names, seed, s, l)
+    voice_colors(names, seed, &[])
+}
+
+/// The saturation and lightness a character's colour is drawn at in the app.
+fn voice_sl() -> (f32, f32) {
+    if pal().dark {
+        (0.62, 0.72)
+    } else {
+        (0.66, 0.36)
+    }
+}
+
+/// Every speaker's colour, with the ones `chosen` for them (name, hue 0–359)
+/// kept for continuity: a chosen hue is drawn at the same depth as a dealt
+/// one, so it reads in this theme. Anyone not chosen is dealt one from the
+/// wheel, as in Random. An empty `chosen` is exactly Random.
+pub fn voice_colors(names: &[String], seed: u32, chosen: &[(String, u16)]) -> std::collections::HashMap<String, Color32> {
+    let (s, l) = voice_sl();
+    with_chosen(voices_at(names, seed, s, l), chosen, s, l)
+}
+
+/// The same, as ink for paper.
+pub fn voice_inks(names: &[String], seed: u32, chosen: &[(String, u16)]) -> std::collections::HashMap<String, [u8; 3]> {
+    with_chosen(voices_at(names, seed, 0.70, 0.34), chosen, 0.70, 0.34)
+        .into_iter()
+        .map(|(n, c)| (n, [c.r(), c.g(), c.b()]))
+        .collect()
+}
+
+/// A hue as a character's colour in this theme: what a swatch in the colour
+/// picker shows.
+pub fn voice_of_hue(hue: u16) -> Color32 {
+    let (s, l) = voice_sl();
+    hsl(hue as f32 / 360.0, s, l)
+}
+
+fn with_chosen(
+    mut dealt: std::collections::HashMap<String, Color32>,
+    chosen: &[(String, u16)],
+    s: f32,
+    l: f32,
+) -> std::collections::HashMap<String, Color32> {
+    for (name, hue) in chosen {
+        if let Some(c) = dealt.get_mut(name) {
+            *c = hsl(*hue as f32 / 360.0, s, l);
+        }
+    }
+    dealt
 }
 
 /// The same colours for paper: each speaker keeps their hue — so they are
 /// recognisably the colour they wear in the app — at a depth that reads as
 /// ink on white, whatever theme the app is in.
 pub fn character_inks(names: &[String], seed: u32) -> std::collections::HashMap<String, [u8; 3]> {
-    voices_at(names, seed, 0.70, 0.34)
-        .into_iter()
-        .map(|(n, c)| (n, [c.r(), c.g(), c.b()]))
-        .collect()
+    voice_inks(names, seed, &[])
 }
 
 fn voices_at(names: &[String], seed: u32, s: f32, l: f32) -> std::collections::HashMap<String, Color32> {
@@ -1528,7 +1572,7 @@ fn c3(r: u8, g: u8, b: u8) -> Color32 {
 pub fn element_ink(e: Element) -> Color32 {
     let p = pal();
     match e {
-        Element::SceneHeading | Element::Shot | Element::Character => p.text,
+        Element::SceneHeading | Element::Shot | Element::Character | Element::Act => p.text,
         Element::Dialogue => mix(p.text, p.text_dim, 0.15),
         Element::Action => mix(p.text, p.text_dim, 0.35),
         Element::Parenthetical | Element::Transition => p.text_dim,

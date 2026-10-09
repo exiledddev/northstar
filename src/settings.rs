@@ -161,6 +161,10 @@ pub struct Settings {
     pub character_colors_reading: bool,
     /// Turns the character colour wheel; Shuffle bumps it.
     pub colour_seed: u32,
+    /// Custom: characters wear the colours chosen for them in the script
+    /// (anyone without one is dealt one, as in Random). Random: everyone is
+    /// dealt one from the wheel.
+    pub custom_colors: bool,
     /// Where "View on YouTrack", at the foot of the library, goes.
     pub youtrack_url: String,
     // ---- what a PDF carries; remembered from the Export window ----
@@ -201,6 +205,7 @@ impl Default for Settings {
             character_colors: false,
             character_colors_reading: false,
             colour_seed: 0,
+            custom_colors: false,
             youtrack_url: DEFAULT_YOUTRACK.to_string(),
             pdf_title_page: true,
             pdf_scene_numbers: false,
@@ -274,7 +279,12 @@ impl Settings {
             b(self.pdf_title_page),
             b(self.pdf_scene_numbers),
             b(self.pdf_character_colors),
-        )
+        ) + if self.custom_colors {
+            // only when chosen, so a file that never chose stays as it was
+            "character_colors_mode = custom\n"
+        } else {
+            ""
+        }
     }
 
     pub fn parse(text: &str) -> Settings {
@@ -323,6 +333,7 @@ impl Settings {
                 "character_colors" => s.character_colors = yes(v),
                 "character_colors_reading" => s.character_colors_reading = yes(v),
                 "colour_seed" => s.colour_seed = v.parse::<u32>().unwrap_or(0),
+                "character_colors_mode" => s.custom_colors = v == "custom",
                 "pdf_title_page" => s.pdf_title_page = yes(v),
                 "pdf_scene_numbers" => {
                     s.pdf_scene_numbers = yes(v);

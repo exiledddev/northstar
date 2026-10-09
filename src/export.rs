@@ -9,7 +9,7 @@ use std::io;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::{Path, PathBuf};
 
-use crate::model::{wrap, Document, Element, LINES_PER_PAGE, PAGE_COLS};
+use crate::model::{act_title, end_of, wrap, Document, Element, LINES_PER_PAGE, PAGE_COLS};
 use crate::storage;
 
 #[derive(Clone, Debug)]
@@ -25,6 +25,16 @@ pub struct Line {
 }
 
 impl Line {
+    /// An act's title line, which always opens a page.
+    pub fn is_act_title(&self) -> bool {
+        self.element == Some(Element::Act) && self.block.is_some()
+    }
+
+    /// The END OF ACT line closing an act: made by the layout, never stored.
+    pub fn is_act_end(&self) -> bool {
+        self.element == Some(Element::Act) && self.block.is_none()
+    }
+
     fn blank() -> Self {
         Line {
             indent: 0,
@@ -36,15 +46,60 @@ impl Line {
     }
 }
 
+/// Lines centred in the text column, the way an act's title and its END OF
+/// line are set.
+fn centred(text: &str, block: Option<u64>) -> Vec<Line> {
+    wrap(text, PAGE_COLS)
+        .into_iter()
+        .map(|l| Line {
+            indent: PAGE_COLS.saturating_sub(l.chars().count()) / 2,
+            text: l,
+            element: Some(Element::Act),
+            block,
+            scene: None,
+        })
+        .collect()
+}
+
+/// What an act is called in print: its title, or ACT ONE… while it has none.
+fn act_heading(text: &str, number: usize) -> String {
+    let t = text.trim();
+    if t.is_empty() {
+        act_title(number)
+    } else {
+        t.to_uppercase()
+    }
+}
+
+/// Close an act: two blank lines, then END OF ACT ONE, centred.
+fn close_act(out: &mut Vec<Line>, title: &str) {
+    out.push(Line::blank());
+    out.push(Line::blank());
+    out.extend(centred(&end_of(title), None));
+}
+
 /// Flatten the document into wrapped, indented lines.
 pub fn compose(doc: &Document) -> Vec<Line> {
     let mut out: Vec<Line> = Vec::new();
     let mut scene_no = 0usize;
+    // the act being written, by its printed title
+    let mut act: Option<String> = None;
+    let mut act_no = 0usize;
 
     for block in &doc.blocks {
         if block.element == Element::SceneHeading {
             // an empty heading still counts, so numbers match the navigator
             scene_no += 1;
+        }
+        if block.element == Element::Act {
+            act_no += 1;
+            if let Some(t) = act.take() {
+                close_act(&mut out, &t);
+            }
+            let title = act_heading(&block.text, act_no);
+            out.extend(centred(&title, Some(block.id)));
+            act = Some(title);
+            continue;
         }
         let text = block.text.trim();
         if text.is_empty() {
@@ -81,19 +136,34 @@ pub fn compose(doc: &Document) -> Vec<Line> {
             });
         }
     }
+    if let Some(t) = act {
+        close_act(&mut out, &t);
+    }
 
     out
 }
 
 /// Split composed lines into pages, keeping a character cue with its dialogue.
+/// An act always starts a page of its own, and its END OF line is never left
+/// alone at the top of one.
 pub fn paginate(lines: &[Line]) -> Vec<Vec<Line>> {
     let mut pages: Vec<Vec<Line>> = Vec::new();
     let mut page: Vec<Line> = Vec::new();
 
-    for line in lines {
+    for (i, line) in lines.iter().enumerate() {
         // never start a page with blank filler
         if page.is_empty() && line.text.trim().is_empty() {
             continue;
+        }
+        // an act's title (its first line, when a long one wraps) opens a page
+        let opens_act = line.is_act_title() && (i == 0 || lines[i - 1].block != line.block);
+        if opens_act && page.iter().any(|l| !l.text.trim().is_empty()) {
+            pages.push(std::mem::take(&mut page));
+        }
+        if line.is_act_end() && page.is_empty() {
+            if let Some(prev) = pages.last_mut() {
+                page = carry_into_next(prev);
+            }
         }
         page.push(line.clone());
 
@@ -119,6 +189,35 @@ pub fn paginate(lines: &[Line]) -> Vec<Vec<Line>> {
         pages.push(Vec::new());
     }
     pages
+}
+
+/// The end of a full page, taken over to the next so an END OF line has
+/// company: the last paragraph, and its character cue if it is a speech.
+/// What it gives up keeps at least four lines on the page it leaves.
+fn carry_into_next(prev: &mut Vec<Line>) -> Vec<Line> {
+    while prev.last().map(|l| l.text.trim().is_empty()).unwrap_or(false) {
+        prev.pop();
+    }
+    let mut carry: Vec<Line> = Vec::new();
+    let Some(block) = prev.last().and_then(|l| l.block) else {
+        return carry;
+    };
+    while prev.len() > 4 && prev.last().map(|l| l.block == Some(block)).unwrap_or(false) {
+        carry.insert(0, prev.pop().unwrap());
+    }
+    while prev.len() > 4
+        && matches!(
+            prev.last().and_then(|l| l.element),
+            Some(Element::Character) | Some(Element::Parenthetical)
+        )
+    {
+        carry.insert(0, prev.pop().unwrap());
+    }
+    if !carry.is_empty() {
+        carry.push(Line::blank());
+        carry.push(Line::blank());
+    }
+    carry
 }
 
 pub fn page_count(doc: &Document) -> usize {
@@ -236,8 +335,26 @@ pub fn to_fountain(doc: &Document) -> String {
         s.push('\n');
     }
 
+    let body_from = s.len();
+    let mut act: Option<String> = None;
+    let mut act_no = 0usize;
     for b in &doc.blocks {
         let text = b.text.trim();
+        if b.element == Element::Act {
+            // a page break, the act's title centred, and the last one closed
+            act_no += 1;
+            if let Some(t) = act.take() {
+                s.push_str(&format!(">{}<\n\n", end_of(&t)));
+            }
+            let title = act_heading(text, act_no);
+            if s.len() > body_from {
+                s.push_str("===\n\n");
+            }
+            // the section names it for outlines; the centred line prints it
+            s.push_str(&format!("# {title}\n\n>{title}<\n\n"));
+            act = Some(title);
+            continue;
+        }
         if text.is_empty() {
             continue;
         }
@@ -257,7 +374,11 @@ pub fn to_fountain(doc: &Document) -> String {
             }
             Element::Dialogue => s.push_str(&format!("{}\n\n", text)),
             Element::Transition => s.push_str(&format!("> {}\n\n", text.to_uppercase())),
+            Element::Act => {}
         }
+    }
+    if let Some(t) = act {
+        s.push_str(&format!(">{}<\n\n", end_of(&t)));
     }
     s
 }
@@ -532,7 +653,7 @@ pub fn pdf_bytes(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>, String> {
             }
             let x = LEFT_MARGIN_MM + line.indent as f32 * CHAR_W_MM;
             let y = PAGE_H_MM - TOP_MARGIN_MM - (row as f32 + 1.0) * LINE_H_MM;
-            let bold = matches!(line.element, Some(Element::SceneHeading));
+            let bold = matches!(line.element, Some(Element::SceneHeading) | Some(Element::Act));
             if opts.scene_numbers {
                 if let Some(n) = line.scene {
                     if inked.is_some() {
@@ -560,6 +681,20 @@ pub fn pdf_bytes(doc: &Document, opts: &PdfOptions) -> Result<Vec<u8>, String> {
                 Mm(y),
                 if bold { &courier_bold } else { &courier },
             );
+            // an act's title and its close are underlined
+            if line.element == Some(Element::Act) {
+                let w = line.text.chars().count() as f32 * CHAR_W_MM;
+                let under = y - 0.9;
+                layer.set_outline_color(colour(*ink));
+                layer.set_outline_thickness(0.6);
+                layer.add_line(printpdf::Line {
+                    points: vec![
+                        (printpdf::Point::new(Mm(x), Mm(under)), false),
+                        (printpdf::Point::new(Mm(x + w), Mm(under)), false),
+                    ],
+                    is_closed: false,
+                });
+            }
         }
     }
 
@@ -585,8 +720,29 @@ pub fn to_fdx(doc: &Document) -> String {
     s.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>\n");
     s.push_str("<FinalDraft DocumentType=\"Script\" Template=\"No\" Version=\"5\">\n");
     s.push_str("  <Content>\n");
+    let mut act: Option<String> = None;
+    let mut act_no = 0usize;
+    let end_act = |s: &mut String, title: &str| {
+        s.push_str(&format!(
+            "    <Paragraph Type=\"End of Act\">\n      <Text>{}</Text>\n    </Paragraph>\n",
+            xml(&end_of(title))
+        ));
+    };
     for b in &doc.blocks {
         let text = b.text.trim();
+        if b.element == Element::Act {
+            act_no += 1;
+            if let Some(t) = act.take() {
+                end_act(&mut s, &t);
+            }
+            let title = act_heading(text, act_no);
+            s.push_str(&format!(
+                "    <Paragraph Type=\"New Act\">\n      <Text>{}</Text>\n    </Paragraph>\n",
+                xml(&title)
+            ));
+            act = Some(title);
+            continue;
+        }
         if text.is_empty() {
             continue;
         }
@@ -598,6 +754,7 @@ pub fn to_fdx(doc: &Document) -> String {
             Element::Dialogue => "Dialogue",
             Element::Transition => "Transition",
             Element::Shot => "Shot",
+            Element::Act => "New Act",
         };
         let body = if b.element == Element::Parenthetical {
             format!("({})", text.trim_matches(|c| c == '(' || c == ')').trim())
@@ -615,6 +772,9 @@ pub fn to_fdx(doc: &Document) -> String {
         }
         s.push_str(&format!("      <Text>{}</Text>\n", xml(&body)));
         s.push_str("    </Paragraph>\n");
+    }
+    if let Some(t) = act {
+        end_act(&mut s, &t);
     }
     s.push_str("  </Content>\n");
     s.push_str("  <TitlePage>\n    <Content>\n");

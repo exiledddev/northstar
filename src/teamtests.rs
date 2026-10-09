@@ -451,3 +451,155 @@ fn the_desktop_has_no_team_and_no_picker() {
     let _ = ctx.run(screen(), |c| app.frame(c));
     assert!(app.access().can_edit());
 }
+
+/// Three scenes, no acts yet.
+fn three_scenes() -> Document {
+    let mut d = Document::default();
+    d.blocks.clear();
+    d.meta.title = "Arc".into();
+    for (h, a) in [("INT. ONE - DAY", "One."), ("EXT. TWO - NIGHT", "Two."), ("INT. THREE - DAWN", "Three.")] {
+        d.push(Element::SceneHeading, h);
+        d.push(Element::Action, a);
+    }
+    d.reseed_ids();
+    d
+}
+
+fn shape(d: &Document) -> Vec<(Element, String)> {
+    d.blocks.iter().map(|b| (b.element, b.text.clone())).collect()
+}
+
+#[test]
+fn ctrl_shift_enter_starts_an_act_at_the_scene_you_are_in() {
+    let mut t = Team1::with(Role::Editor, |s| s.docs.push((PathBuf::from("arc"), three_scenes())));
+    t.app.debug_open_from_home(PathBuf::from("arc"));
+    t.frames(2);
+
+    // in the second scene: the act goes in before its heading
+    let two = t.app.doc().blocks[3].id;
+    t.app.focus_on(two);
+    t.frames(2);
+    t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(t.app.doc().blocks[2].element, Element::Act);
+    assert_eq!(t.app.doc().blocks[2].text, "ACT ONE");
+    assert_eq!(t.app.doc().blocks[3].text, "EXT. TWO - NIGHT");
+    assert_eq!(t.app.focus_block(), Some(t.app.doc().blocks[2].id), "the caret is in its title");
+    assert_eq!(t.app.doc().scenes().len(), 3, "no scene was made or lost");
+
+    // one before the first scene: it is ACT ONE now, and the other moves up
+    let one = t.app.doc().blocks[1].id;
+    t.app.focus_on(one);
+    t.frames(2);
+    t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    let acts: Vec<String> = t.app.doc().acts().iter().map(|a| a.title.clone()).collect();
+    assert_eq!(acts, ["ACT ONE", "ACT TWO"]);
+    assert_eq!(t.app.doc().blocks[0].element, Element::Act);
+
+    // renamed acts keep their names
+    t.app.doc_mut().blocks[0].text = "COLD OPEN".into();
+    let three = t.app.doc().blocks.iter().find(|b| b.text == "Three.").unwrap().id;
+    t.app.focus_on(three);
+    t.frames(2);
+    t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    let acts: Vec<String> = t.app.doc().acts().iter().map(|a| a.title.clone()).collect();
+    assert_eq!(acts, ["COLD OPEN", "ACT TWO", "ACT THREE"]);
+
+    // and it reaches the team library as level-one headings
+    t.app.debug_save();
+    t.frames(3);
+    let saved = t.shared.borrow().saves.last().map(|(_, md)| md.clone()).unwrap_or_default();
+    assert!(saved.contains("# COLD OPEN\n\n## INT. ONE - DAY"), "{saved}");
+    assert!(saved.contains("# ACT THREE\n\n## INT. THREE - DAWN"), "{saved}");
+}
+
+#[test]
+fn a_script_someone_else_is_editing_takes_no_act() {
+    let mut t = Team1::with(Role::Editor, |s| {
+        s.docs.push((PathBuf::from("arc"), three_scenes()));
+        s.access.push((PathBuf::from("arc"), Access::ReadOnly { by: Some(alex()) }));
+    });
+    t.app.debug_open_from_home(PathBuf::from("arc"));
+    t.frames(2);
+    let before = shape(t.app.doc());
+    let two = t.app.doc().blocks[3].id;
+    t.app.focus_on(two);
+    t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    t.frames(3);
+    assert_eq!(shape(t.app.doc()), before);
+    assert!(t.shared.borrow().saves.is_empty());
+}
+
+/// Two people talking.
+fn a_conversation() -> Document {
+    let mut d = Document::default();
+    d.blocks.clear();
+    d.meta.title = "Talk".into();
+    d.push(Element::SceneHeading, "INT. ROOM - DAY");
+    d.push(Element::Character, "MARIA");
+    d.push(Element::Dialogue, "You said six.");
+    d.push(Element::Character, "COLE");
+    d.push(Element::Dialogue, "Six-ish.");
+    d.reseed_ids();
+    d
+}
+
+#[test]
+fn a_chosen_colour_is_written_into_the_script_for_everyone() {
+    let mut t = Team1::with(Role::Editor, |s| s.docs.push((PathBuf::from("talk"), a_conversation())));
+    t.app.settings_mut().character_colors = true;
+    t.app.debug_open_from_home(PathBuf::from("talk"));
+    t.frames(3);
+    assert!(!t.app.settings().custom_colors);
+
+    t.app.debug_open_voice_picker("COLE");
+    t.frames(3);
+    assert!(t.app.debug_voice_picker_open());
+    t.app.debug_set_voice("COLE", Some(120));
+    t.frames(2);
+    assert!(t.app.settings().custom_colors, "choosing a colour turns Custom on");
+    assert_eq!(t.app.doc().meta.voice("COLE"), Some(120));
+    let voices = t.app.debug_voices().expect("colours are on");
+    assert_eq!(voices["COLE"], crate::theme::voice_of_hue(120));
+    assert!(t.app.debug_pdf_inks().is_none(), "the PDF is black until asked otherwise");
+    t.app.settings_mut().pdf_character_colors = true;
+    let inks = t.app.debug_pdf_inks().unwrap();
+    assert_eq!(inks["COLE"], crate::theme::voice_inks(&["COLE".to_string()], 0, &[("COLE".to_string(), 120)])["COLE"]);
+
+    t.app.debug_save();
+    t.frames(3);
+    let saved = t.shared.borrow().saves.last().map(|(_, md)| md.clone()).unwrap_or_default();
+    assert!(saved.contains("voices: COLE=120"), "{saved}");
+
+    // Esc closes the picker; Random puts the dealt colours back, the choice kept
+    t.press(Key::Escape, Modifiers::NONE);
+    assert!(!t.app.debug_voice_picker_open());
+    t.app.settings_mut().custom_colors = false;
+    let voices = t.app.debug_voices().unwrap();
+    assert_eq!(voices, crate::theme::character_colors(&["MARIA".to_string(), "COLE".to_string()], 0));
+    assert_eq!(t.app.doc().meta.voice("COLE"), Some(120));
+
+    // the Colour tab draws its switch and its list, in both modes
+    for custom in [true, false] {
+        t.app.settings_mut().custom_colors = custom;
+        t.app.debug_open_settings(2);
+        t.frames(3);
+    }
+}
+
+#[test]
+fn a_colour_cannot_be_chosen_in_a_script_someone_else_is_editing() {
+    let mut t = Team1::with(Role::Editor, |s| {
+        s.docs.push((PathBuf::from("talk"), a_conversation()));
+        s.access.push((PathBuf::from("talk"), Access::ReadOnly { by: Some(alex()) }));
+    });
+    t.app.settings_mut().character_colors = true;
+    t.app.debug_open_from_home(PathBuf::from("talk"));
+    t.frames(2);
+    t.app.debug_open_voice_picker("COLE");
+    t.frames(2);
+    assert!(!t.app.debug_voice_picker_open());
+    t.app.debug_set_voice("COLE", Some(120));
+    t.frames(3);
+    assert_eq!(t.app.doc().meta.voice("COLE"), None);
+    assert!(t.shared.borrow().saves.is_empty());
+}

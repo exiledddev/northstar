@@ -25,6 +25,7 @@
 //! | Parenthetical  | `*(quietly)*`       |
 //! | Dialogue       | `> Don't move.`     |
 //! | Transition     | `` `CUT TO:` ``     |
+//! | Act            | `# ACT ONE`         |
 //!
 //! A scene's index card — its synopsis and colour — rides directly under its
 //! heading as an HTML comment, which every markdown viewer hides:
@@ -225,13 +226,24 @@ pub fn to_markdown(doc: &Document) -> String {
     if doc.meta.starred {
         s.push_str("starred: yes\n");
     }
+    let voices: Vec<String> = doc
+        .meta
+        .voices
+        .iter()
+        .filter(|(n, _)| voice_name_ok(n))
+        .map(|(n, h)| format!("{}={}", n.trim(), h % 360))
+        .collect();
+    if !voices.is_empty() {
+        s.push_str(&format!("voices: {}\n", voices.join("; ")));
+    }
     s.push_str("---\n\n");
 
     for b in &doc.blocks {
         let text = b.text.trim();
         if text.is_empty() {
-            // an empty heading still carries its card, if it has one
-            if !(b.element == Element::SceneHeading && has_card(b)) {
+            // an empty heading still carries its card, if it has one, and an
+            // act with no title yet is still an act
+            if !(b.element == Element::SceneHeading && has_card(b)) && b.element != Element::Act {
                 continue;
             }
         }
@@ -246,6 +258,7 @@ pub fn to_markdown(doc: &Document) -> String {
             }
             Element::Dialogue => format!("> {}", text),
             Element::Transition => format!("`{}`", text),
+            Element::Act => format!("# {}", text),
         };
         s.push_str(line.trim_end());
         if b.element == Element::SceneHeading && has_card(b) {
@@ -287,6 +300,30 @@ fn parse_card(line: &str) -> Option<(Option<usize>, String)> {
     }
 }
 
+/// A name the front matter's `voices:` line can carry and read back.
+fn voice_name_ok(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty() && !n.contains([';', '=', '\n'])
+}
+
+/// `MARIA=212; COLE=24`, read back. Anything malformed is skipped.
+fn parse_voices(v: &str) -> Vec<(String, u16)> {
+    let mut out: Vec<(String, u16)> = Vec::new();
+    for part in v.split(';') {
+        let Some((name, hue)) = part.split_once('=') else {
+            continue;
+        };
+        let name = name.trim().to_uppercase();
+        let Ok(hue) = hue.trim().parse::<u16>() else {
+            continue;
+        };
+        if voice_name_ok(&name) && !out.iter().any(|(n, _)| *n == name) {
+            out.push((name, hue % 360));
+        }
+    }
+    out
+}
+
 fn esc(s: &str) -> String {
     s.replace('\n', " ").trim().to_string()
 }
@@ -315,6 +352,7 @@ fn split_front_matter(text: &str) -> (Meta, &str) {
                 "contact" => meta.contact = v,
                 "draft" => meta.draft = v,
                 "starred" => meta.starred = matches!(v.as_str(), "yes" | "true" | "1"),
+                "voices" => meta.voices = parse_voices(&v),
                 _ => {}
             }
         }
@@ -359,8 +397,9 @@ pub fn from_markdown(text: &str) -> Document {
         } else if line == "##" {
             push(&mut doc, Element::SceneHeading, String::new());
         } else if let Some(rest) = line.strip_prefix("# ") {
-            // a stray H1: treat as a scene heading rather than losing it
-            push(&mut doc, Element::SceneHeading, rest.trim().to_uppercase());
+            push(&mut doc, Element::Act, rest.trim().to_uppercase());
+        } else if line == "#" {
+            push(&mut doc, Element::Act, String::new());
         } else if let Some(rest) = line.strip_prefix("> ") {
             push(&mut doc, Element::Dialogue, rest.trim().to_string());
         } else if line == ">" {

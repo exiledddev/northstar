@@ -12,6 +12,10 @@
 //! carries a four-pointed star in the gutter — Northstar's marker, standing
 //! where Tesseract has its rhombus — that lights while you are in its scene;
 //! and where a printed page will break, a rule fades in and out of nothing.
+//!
+//! An act is drawn as a wide divider across the page: a faint aurora in the
+//! theme's two gradients, a constellation of its own, the mark, and the act's
+//! title set large and tracked between two horizon lines.
 
 use std::collections::HashMap;
 
@@ -19,13 +23,16 @@ use eframe::egui::{self, text::CCursor, Key, Modifiers, Pos2, Rect, Sense, Vec2}
 
 use crate::anim;
 use crate::caret;
-use crate::model::{base_character, complete, guess_element, Document, Element, PAGE_COLS};
+use crate::logo;
+use crate::model::{act_title, base_character, complete, guess_element, Document, Element, PAGE_COLS};
 use crate::theme::{self, pal};
 
 /// Room to the left of the text column for the element tag and the star.
 pub const GUTTER: f32 = 74.0;
 /// Where the scene star sits, from the column's left edge.
 const STAR_X: f32 = 26.0;
+/// How tall an act's divider stands.
+const ACT_H: f32 = 124.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Caret {
@@ -108,6 +115,8 @@ pub struct View<'a> {
     pub element_colors: bool,
     /// Each speaker's colour, when their lines should wear it.
     pub char_colors: Option<&'a HashMap<String, egui::Color32>>,
+    /// Printed pages in all, for the page range under an act's title.
+    pub pages: usize,
 }
 
 /// Retype the focused block. Used by the palette and Ctrl+1..7.
@@ -137,6 +146,9 @@ enum Act {
     MoveDown { id: u64 },
     Explode { id: u64 },
     Accept { id: u64, rest: String },
+    /// Keep the caret where it is: a key egui would move focus with did
+    /// nothing here.
+    Stay { id: u64, at: usize },
 }
 
 pub fn block_id(b: u64) -> egui::Id {
@@ -152,6 +164,7 @@ fn hint_for(e: Element) -> &'static str {
         Element::Dialogue => "What they say.",
         Element::Transition => "CUT TO:",
         Element::Shot => "ANGLE ON",
+        Element::Act => "ACT ONE",
     }
 }
 
@@ -222,6 +235,8 @@ fn page_body(
     let mut in_scene: Option<usize> = None;
 
     let needle = view.find.map(|s| s.to_lowercase()).filter(|s| !s.is_empty());
+    // what each act's divider says under its title
+    let act_notes = act_notes(doc, view.page_starts, view.pages);
     // who is talking: a cue starts it, its parentheticals and dialogue carry
     // it, anything else ends it
     let mut speaker: Option<String> = None;
@@ -273,6 +288,9 @@ fn page_body(
             st.focus_block = Some(bid);
             let at = pos.unwrap_or(len);
             let ghost = ghost.clone();
+            // an act's title is never split: Enter starts its first scene
+            let is_act = element == Element::Act;
+            let split_at = if is_act { len } else { at };
 
             // egui matches a chord with *extra* Shift or Alt held as the plain
             // key, so the more specific chord must always be asked for first
@@ -280,15 +298,20 @@ fn page_body(
                 if inp.consume_key(Modifiers::SHIFT, Key::Enter) {
                     acts.push(Act::Split {
                         id: bid,
-                        at,
-                        same: true,
+                        at: split_at,
+                        same: !is_act,
                     });
                 } else if inp.consume_key(Modifiers::NONE, Key::Enter) {
                     acts.push(Act::Split {
                         id: bid,
-                        at,
+                        at: split_at,
                         same: false,
                     });
+                } else if is_act
+                    && (inp.consume_key(Modifiers::SHIFT, Key::Tab) || inp.consume_key(Modifiers::NONE, Key::Tab))
+                {
+                    // an act stays an act: Tab does not retype it
+                    acts.push(Act::Stay { id: bid, at });
                 } else if inp.consume_key(Modifiers::SHIFT, Key::Tab) {
                     acts.push(Act::SetElement {
                         id: bid,
@@ -369,7 +392,11 @@ fn page_body(
             })
             .inner
         };
-        let output = if opening {
+        let output = if element == Element::Act {
+            let note = act_notes.get(&bid).cloned().unwrap_or_default();
+            let ink = if dimmed { 0.35 } else { 1.0 };
+            act_row(ui, doc, i, id, col, focused, raw, &note, ink)
+        } else if opening {
             let known = st.heights.get(&bid).copied().unwrap_or(row_h + 2.0);
             let grow = anim::bounce(raw);
             let (slot, _) = ui.allocate_exact_size(
@@ -414,7 +441,7 @@ fn page_body(
         let lit = anim::ease(ui.ctx(), ("ns-wash", bid), focused, 0.24);
         let mut under: Vec<egui::Shape> = Vec::new();
         // the element's band: where its text may run, in its colour
-        if view.element_colors && !dimmed {
+        if view.element_colors && !dimmed && element != Element::Act {
             // The band hugs the words themselves rather than the whole column
             // the element may use, so the page reads as text with a tint
             // under it, not as a stack of bars. A thin tick at its left edge,
@@ -447,7 +474,7 @@ fn page_body(
                 ));
             }
         }
-        if lit > 0.01 {
+        if lit > 0.01 && element != Element::Act {
             // A wash that fades away to the right, not a bordered card. It
             // takes in the gutter, so the element's tag sits inside the light
             // with its line rather than outside it.
@@ -615,6 +642,298 @@ fn page_body(
     changed
 }
 
+/// What an act says about itself — which act, how many scenes, and the
+/// pages it fills — by act block id. `page_starts` maps a block to the page
+/// that starts at it, as the shell's layout pass has it.
+pub fn act_notes(doc: &Document, page_starts: &HashMap<u64, usize>, pages: usize) -> HashMap<u64, String> {
+    let acts = doc.acts();
+    let mut out = HashMap::new();
+    if acts.is_empty() {
+        return out;
+    }
+    // an act always opens a page; the first may open page one, which has no
+    // entry of its own
+    let first_page = |id: u64| page_starts.get(&id).copied().unwrap_or(1);
+    for (k, a) in acts.iter().enumerate() {
+        let scenes = doc.blocks[a.start..a.end]
+            .iter()
+            .filter(|b| b.element == Element::SceneHeading)
+            .count();
+        let from = first_page(a.id);
+        let to = match acts.get(k + 1) {
+            Some(next) => first_page(next.id).saturating_sub(1).max(from),
+            None => pages.max(from),
+        };
+        let pages = if to > from {
+            format!("pages {from}\u{2013}{to}")
+        } else {
+            format!("page {from}")
+        };
+        out.insert(
+            a.id,
+            format!(
+                "Act {} \u{b7} {} scene{} \u{b7} {pages}",
+                a.number,
+                scenes,
+                if scenes == 1 { "" } else { "s" }
+            ),
+        );
+    }
+    out
+}
+
+/// A small, stable source of numbers for one act's constellation, so each
+/// act keeps its own pattern from frame to frame and run to run.
+struct Seeded(u64);
+
+impl Seeded {
+    fn next(&mut self) -> f32 {
+        // splitmix64
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 40) as f32 / (1u64 << 24) as f32
+    }
+}
+
+/// An act: a divider across the page that says a new act starts here, and
+/// that its title is still just text you can write in. Everything is drawn
+/// from the palette, so it belongs to whichever theme is on; it brightens a
+/// little, and its stars twinkle, only while the caret is in it.
+#[allow(clippy::too_many_arguments)]
+fn act_row(
+    ui: &mut egui::Ui,
+    doc: &mut Document,
+    i: usize,
+    id: egui::Id,
+    col: Rect,
+    focused: bool,
+    raw: f32,
+    note: &str,
+    fade: f32,
+) -> egui::text_edit::TextEditOutput {
+    let p = pal();
+    let ctx = ui.ctx().clone();
+    let bid = doc.blocks[i].id;
+    let number = doc.blocks[..=i].iter().filter(|b| b.element == Element::Act).count();
+
+    // springs open like any new block
+    let grow = if raw < 0.999 { anim::bounce(raw).max(0.0) } else { 1.0 };
+    let (slot, _) = ui.allocate_exact_size(Vec2::new(col.width(), ACT_H * grow), Sense::hover());
+    let band = Rect::from_min_size(slot.min, Vec2::new(col.width(), ACT_H));
+    let clip = slot.intersect(ui.clip_rect());
+    let painter = ui.painter().with_clip_rect(clip);
+    if raw < 0.999 {
+        anim::keep_going(&ctx);
+    }
+
+    let lit = anim::ease(&ctx, ("ns-act", bid), focused, 0.30);
+    let alive = focused && anim::enabled();
+    let t = if alive {
+        anim::keep_going(&ctx);
+        anim::clock(&ctx)
+    } else {
+        0.0
+    };
+    let a = |c: egui::Color32, k: f32| theme::wash(c, (c.a() as f32 * k * fade).clamp(0.0, 255.0) as u8);
+
+    // everything is centred on the page column, not the gutter
+    let char_w = (col.width() - GUTTER - 28.0) / PAGE_COLS as f32;
+    let cx = col.left() + GUTTER + char_w * PAGE_COLS as f32 * 0.5;
+    let half = (char_w * PAGE_COLS as f32 * 0.5 + 26.0).min(cx - col.left() - 4.0);
+    let title_y = band.top() + 70.0;
+
+    // ---- the aurora: the theme's two gradients, a whisper, faded at every
+    // edge so it has no outline ----
+    {
+        let cols = 9usize;
+        let rows = [0.0f32, 0.5, 1.0];
+        let top = band.top() + 8.0;
+        let bottom = band.bottom() - 6.0;
+        let strength = (if p.dark { 0.085 } else { 0.07 }) * (0.8 + 0.45 * lit) * fade;
+        let mut mesh = egui::Mesh::default();
+        for (r, v) in rows.iter().enumerate() {
+            for c in 0..cols {
+                let u = c as f32 / (cols - 1) as f32;
+                let x = cx - half + u * half * 2.0;
+                let y = top + v * (bottom - top);
+                // primary on the left, secondary on the right, through both
+                let hue = if u < 0.5 {
+                    theme::mix(p.prim_grad.0, p.prim_grad.1, u * 2.0)
+                } else {
+                    theme::mix(p.sec_grad.0, p.sec_grad.1, (u - 0.5) * 2.0)
+                };
+                let across = (std::f32::consts::PI * u).sin().powf(1.6);
+                let down = if r == 1 { 1.0 } else { 0.0 };
+                mesh.colored_vertex(Pos2::new(x, y), theme::tint(hue, strength * across * down));
+            }
+        }
+        for r in 0..rows.len() - 1 {
+            for c in 0..cols - 1 {
+                let k = (r * cols + c) as u32;
+                let below = k + cols as u32;
+                mesh.add_triangle(k, k + 1, below);
+                mesh.add_triangle(k + 1, below + 1, below);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
+    // ---- its constellation: 7 to 9 stars either side of the title, joined
+    // the way a star chart joins them ----
+    {
+        let mut rng = Seeded(bid.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA076_1D64_78BD_642F);
+        let n = 7 + (rng.next() * 3.0) as usize;
+        let keep_clear = 128.0;
+        let top = band.top() + 18.0;
+        let bottom = band.bottom() - 18.0;
+        let mut sides: [Vec<(Pos2, f32, f32)>; 2] = [Vec::new(), Vec::new()];
+        for k in 0..n {
+            let side = k % 2;
+            let u = 0.06 + rng.next() * 0.88;
+            let mut v = rng.next();
+            // off the horizon line
+            if (v - 0.5).abs() < 0.12 {
+                v = if v < 0.5 { 0.3 } else { 0.7 };
+            }
+            let span = (half - keep_clear).max(20.0);
+            let x = if side == 0 {
+                cx - keep_clear - u * span
+            } else {
+                cx + keep_clear + u * span
+            };
+            let y = top + v * (bottom - top);
+            let size = 0.8 + rng.next() * 1.3;
+            let phase = rng.next() * std::f32::consts::TAU;
+            sides[side].push((Pos2::new(x, y), size, phase));
+        }
+        let base = if p.dark { 30.0 } else { 70.0 };
+        let line = theme::wash(theme::mix(p.text_faint, p.primary_light, 0.5), ((base + 26.0 * lit) * fade) as u8);
+        for stars in &mut sides {
+            stars.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
+            for w in stars.windows(2) {
+                painter.line_segment([w[0].0, w[1].0], egui::Stroke::new(0.5, line));
+            }
+        }
+        let star_ink = theme::mix(p.text, p.primary_light, 0.3);
+        for (k, (c, size, phase)) in sides.iter().flatten().enumerate() {
+            let twinkle = if alive { 0.72 + 0.28 * (t * 1.7 + phase).sin() } else { 1.0 };
+            let alpha = (140.0 + 90.0 * lit) * twinkle;
+            if *size > 1.75 || k == 0 {
+                // the brightest: a tiny star of the mark's own shape
+                theme::grad_star(
+                    &painter,
+                    *c,
+                    size * 2.2,
+                    a(theme::wash(p.sec_grad.0, alpha as u8), 1.0),
+                    a(theme::wash(theme::lighten(p.sec_grad.1, 0.3), alpha as u8), 1.0),
+                );
+            } else {
+                painter.circle_filled(*c, *size * 0.75, a(theme::wash(star_ink, alpha as u8), 1.0));
+            }
+        }
+    }
+
+    // ---- the mark, with one soft focal glow ----
+    let mark = Rect::from_center_size(Pos2::new(cx, band.top() + 32.0), Vec2::splat(24.0 + 2.0 * lit));
+    if fade > 0.9 {
+        logo::paint(&painter, mark, 0.10 + 0.16 * lit);
+    } else {
+        logo::paint(&painter, mark, 0.0);
+    }
+
+    // ---- the title: still just text, set large and tracked ----
+    let font = theme::font_semi(22.0);
+    let track = 3.4;
+    let ink = a(p.text, 1.0);
+    let tracked = |text: &str, color: egui::Color32, wrap: f32| {
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            text,
+            0.0,
+            egui::TextFormat {
+                font_id: font.clone(),
+                color,
+                extra_letter_spacing: track,
+                ..Default::default()
+            },
+        );
+        job.wrap.max_width = wrap;
+        job
+    };
+    let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| ui.fonts(|f| f.layout_job(tracked(text, ink, wrap)));
+    let title_w = char_w * PAGE_COLS as f32;
+    let title_rect = Rect::from_center_size(Pos2::new(cx, title_y), Vec2::new(title_w, 32.0));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(title_rect)
+            .layout(egui::Layout::top_down(egui::Align::Center)),
+    );
+    child.set_clip_rect(clip);
+    let hint = tracked(&act_title(number), theme::wash(p.text_faint, (150.0 * fade) as u8), title_w);
+    let output = egui::TextEdit::multiline(&mut doc.blocks[i].text)
+        .id(id)
+        .font(font.clone())
+        .desired_width(title_w)
+        .desired_rows(1)
+        .frame(false)
+        .margin(egui::Margin::symmetric(0.0, 1.0))
+        .lock_focus(false)
+        .horizontal_align(egui::Align::Center)
+        .layouter(&mut layouter)
+        .hint_text(egui::WidgetText::LayoutJob(hint))
+        .show(&mut child);
+
+    // ---- the horizon: hairlines running out from the title, fading ----
+    let words = if doc.blocks[i].text.is_empty() {
+        let g = ctx.fonts(|f| f.layout_job(tracked(&act_title(number), ink, title_w)));
+        g.rect.width()
+    } else {
+        output.galley.rect.width()
+    };
+    let gap = words * 0.5 + 20.0;
+    let reach = (half - gap).max(0.0);
+    let hz = theme::wash(theme::mix(p.text_faint, p.primary_light, 0.35 + 0.3 * lit), ((120.0 + 60.0 * lit) * fade) as u8);
+    for dir in [-1.0f32, 1.0] {
+        let near = cx + dir * gap;
+        let far = cx + dir * (gap + reach);
+        let (l, r, cl, cr) = if dir < 0.0 {
+            (far, near, theme::wash(hz, 0), hz)
+        } else {
+            (near, far, hz, theme::wash(hz, 0))
+        };
+        theme::fill_grad_poly(
+            &painter,
+            &[
+                Pos2::new(l, title_y - 0.5),
+                Pos2::new(r, title_y - 0.5),
+                Pos2::new(r, title_y + 0.5),
+                Pos2::new(l, title_y + 0.5),
+            ],
+            cl,
+            cr,
+            Vec2::new(1.0, 0.0),
+        );
+        // a bead where each line leaves the title
+        painter.circle_filled(Pos2::new(near, title_y), 1.4, hz);
+    }
+
+    // ---- what it holds ----
+    if !note.is_empty() {
+        painter.text(
+            Pos2::new(cx, title_y + 28.0),
+            egui::Align2::CENTER_CENTER,
+            note,
+            theme::font(theme::T_CAP),
+            a(p.text_faint, 1.0),
+        );
+    }
+
+    output
+}
+
 /// The star in a scene heading's gutter: Northstar's marker, drawn and lit
 /// the way Tesseract draws its rhombus — a gradient shape with a bloom the
 /// shape of itself and a bright core, lifting when you are in its scene.
@@ -706,6 +1025,10 @@ fn page_rule(ui: &mut egui::Ui, x0: f32, x1: f32, page: usize) {
 
 fn apply(doc: &mut Document, st: &mut EditorState, act: Act) -> bool {
     match act {
+        Act::Stay { id, at } => {
+            st.focus(id, Caret::At(at));
+            false
+        }
         Act::Accept { id, rest } => {
             let Some(i) = doc.index_of(id) else {
                 return false;
