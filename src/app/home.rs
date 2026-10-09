@@ -106,7 +106,7 @@ impl App {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if self.can_write() {
-                    if new_script_button(ui, 150.0) {
+                    if new_script_button(ui, 150.0, &self.keys_for(crate::keys::Command::NewScript)) {
                         self.new_script();
                         self.home = false;
                     }
@@ -466,7 +466,7 @@ impl App {
                 if self.can_write() {
                     ui.add_space(12.0);
                     ui.horizontal(|ui| {
-                        if new_script_button(ui, 150.0) {
+                        if new_script_button(ui, 150.0, &self.keys_for(crate::keys::Command::NewScript)) {
                             self.new_script();
                             self.home = false;
                         }

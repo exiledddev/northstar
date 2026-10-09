@@ -30,6 +30,7 @@ pub mod editor;
 pub mod export;
 pub mod fountain;
 pub mod icons;
+pub mod keys;
 pub mod logo;
 pub mod model;
 pub mod pages;

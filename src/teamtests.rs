@@ -35,6 +35,8 @@ struct Shared {
     starred: Vec<PathBuf>,
     roles: Vec<(String, Role)>,
     events: Vec<Event>,
+    /// The settings file as last written.
+    settings: Option<String>,
     signed_out: bool,
 }
 
@@ -165,7 +167,8 @@ impl Store for Memory {
     fn read_settings(&mut self) -> Settings {
         Settings::parse("splash = no\nanimations = no\nmatch_tesseract = no\nautosave_ms = 150\n")
     }
-    fn write_settings(&mut self, _s: &Settings) -> Result<(), String> {
+    fn write_settings(&mut self, s: &Settings) -> Result<(), String> {
+        self.shared.borrow_mut().settings = Some(s.serialize());
         Ok(())
     }
     fn deliver(&mut self, name: &str, _bytes: Vec<u8>, _after: Option<AfterExport>) -> Result<String, String> {
@@ -602,4 +605,58 @@ fn a_colour_cannot_be_chosen_in_a_script_someone_else_is_editing() {
     t.frames(3);
     assert_eq!(t.app.doc().meta.voice("COLE"), None);
     assert!(t.shared.borrow().saves.is_empty());
+}
+
+#[test]
+fn a_shortcut_of_your_own_is_kept_and_reset_puts_back_the_default() {
+    use crate::keys::Command;
+    let mut t = Team1::new(Role::Editor);
+    t.app.debug_open_from_home(PathBuf::from("pilot"));
+    t.frames(2);
+    t.app.debug_open_settings(8);
+    t.frames(3);
+    assert_eq!(t.app.debug_settings_tab(), 8, "a team has Settings > Keyboard");
+
+    // Details: click its key cap, press the new chord
+    t.app.debug_capture_keys(Command::ToggleDetails);
+    t.frames(1);
+    // a chord the page owns is refused, and it keeps listening
+    t.press(Key::C, Modifiers::COMMAND);
+    assert!(t.app.debug_key_refusal().unwrap().contains("copy"));
+    // so is one another command has
+    t.press(Key::S, Modifiers::COMMAND);
+    assert!(t.app.debug_key_refusal().unwrap().contains("already Save"));
+    assert!(t.app.debug_settings_open(), "nothing the chord would have done happened");
+    t.press(Key::D, Modifiers::COMMAND | Modifiers::ALT);
+    assert_eq!(t.app.debug_key_capture(), None);
+    assert_eq!(t.app.settings().keys.label(Command::ToggleDetails, false), "Ctrl+Alt+D");
+    let file = t.shared.borrow().settings.clone().unwrap_or_default();
+    assert!(file.contains("key.details = Ctrl+Alt+D"), "kept with your settings: {file}");
+
+    // the new chord works, and the old one no longer does
+    t.app.debug_close_popover();
+    t.frames(2);
+    let before = t.app.settings().show_details;
+    t.press(Key::D, Modifiers::COMMAND | Modifiers::ALT);
+    assert_eq!(t.app.settings().show_details, !before);
+    t.press(Key::I, Modifiers::COMMAND);
+    assert_eq!(t.app.settings().show_details, !before, "Ctrl+I is free now");
+
+    // Esc gives up listening without closing Settings
+    t.app.debug_open_settings(8);
+    t.frames(2);
+    t.app.debug_capture_keys(Command::Save);
+    t.press(Key::Escape, Modifiers::NONE);
+    assert_eq!(t.app.debug_key_capture(), None);
+    assert!(t.app.debug_settings_open());
+    assert_eq!(t.app.settings().keys.label(Command::Save, false), "Ctrl+S");
+
+    // Reset all: Northstar's own again
+    t.app.settings_mut().keys.reset_all();
+    t.frames(2);
+    assert!(t.app.settings().keys.is_default());
+    t.app.debug_close_popover();
+    t.frames(2);
+    t.press(Key::I, Modifiers::COMMAND);
+    assert_eq!(t.app.settings().show_details, before);
 }

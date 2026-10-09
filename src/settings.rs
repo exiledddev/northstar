@@ -172,6 +172,8 @@ pub struct Settings {
     pub pdf_scene_numbers: bool,
     /// Each speaker's cue and lines printed in their colour.
     pub pdf_character_colors: bool,
+    /// Keyboard shortcuts chosen instead of the defaults.
+    pub keys: crate::keys::Keymap,
 }
 
 pub const DEFAULT_YOUTRACK: &str = "https://markedexiled.youtrack.cloud/dashboard?id=177-0";
@@ -210,6 +212,7 @@ impl Default for Settings {
             pdf_title_page: true,
             pdf_scene_numbers: false,
             pdf_character_colors: false,
+            keys: crate::keys::Keymap::default(),
         }
     }
 }
@@ -284,7 +287,7 @@ impl Settings {
             "character_colors_mode = custom\n"
         } else {
             ""
-        }
+        } + &self.keys.serialize()
     }
 
     pub fn parse(text: &str) -> Settings {
@@ -334,6 +337,9 @@ impl Settings {
                 "character_colors_reading" => s.character_colors_reading = yes(v),
                 "colour_seed" => s.colour_seed = v.parse::<u32>().unwrap_or(0),
                 "character_colors_mode" => s.custom_colors = v == "custom",
+                k if k.starts_with("key.") => {
+                    s.keys.parse_line(k, v);
+                }
                 "pdf_title_page" => s.pdf_title_page = yes(v),
                 "pdf_scene_numbers" => {
                     s.pdf_scene_numbers = yes(v);

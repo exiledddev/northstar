@@ -22,6 +22,7 @@ use crate::chrome;
 use crate::editor::{self, Caret, EditorState};
 use crate::export::{self, Format};
 use crate::icons::{self, Icon};
+use crate::keys;
 use crate::logo;
 use crate::model::{act_title, eighths_label, CastMember, Document, Element};
 use crate::pages::{self, PagesState};
@@ -33,12 +34,15 @@ use crate::ui;
 
 mod home;
 mod team;
+mod keyboard;
 mod voices;
 
 const SNAPSHOT_IDLE: Duration = Duration::from_millis(700);
 
 /// Settings' Team tab, after the seven every library has. Team libraries only.
 const TEAM_TAB: usize = 7;
+/// Settings → Keyboard, on a team library: listed after Writing & saving.
+const KEYS_TAB: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Mode {
@@ -211,6 +215,10 @@ pub struct App {
     cast_cursor: HashMap<String, usize>,
     /// The character colour picker, when it is open.
     voice_pick: Option<voices::Pick>,
+    /// Settings → Keyboard is waiting for the chord for this command.
+    key_capture: Option<keys::Command>,
+    /// Why the last chord pressed there was not taken.
+    key_refusal: Option<(keys::Command, String)>,
 
     deck: alerts::Deck<Ask>,
     popover: Option<Popover>,
@@ -353,6 +361,8 @@ impl App {
             words_seen: None,
             cast_cursor: HashMap::new(),
             voice_pick: None,
+            key_capture: None,
+            key_refusal: None,
             deck: alerts::Deck::default(),
             popover: None,
             popover_frame: 0,
@@ -1181,7 +1191,7 @@ impl App {
                     if sopen { p.primary_light } else { p.text_dim },
                 );
                 if sresp
-                    .on_hover_text(format!("Settings · {} · Ctrl+,", pal().id.name()))
+                    .on_hover_text(format!("Settings · {} · {}", pal().id.name(), self.keys_for(keys::Command::Settings)))
                     .clicked()
                 {
                     self.toggle_popover(Popover::Settings);
@@ -1191,10 +1201,12 @@ impl App {
                 ui::rule(ui, 20.0);
                 ui.add_space(4.0);
 
-                if ui::ribbon_button(ui, Icon::Eye, "", "Focus — just the scene you are in · Ctrl+.", self.focus_mode) {
+                let tip = format!("Focus — just the scene you are in · {}", self.keys_for(keys::Command::FocusMode));
+                if ui::ribbon_button(ui, Icon::Eye, "", &tip, self.focus_mode) {
                     self.focus_mode = !self.focus_mode;
                 }
-                if ui::ribbon_button(ui, Icon::Info, "", "Details — title page and figures · Ctrl+I", self.settings.show_details) {
+                let tip = format!("Details — title page and figures · {}", self.keys_for(keys::Command::ToggleDetails));
+                if ui::ribbon_button(ui, Icon::Info, "", &tip, self.settings.show_details) {
                     self.settings.show_details = !self.settings.show_details;
                     self.save_settings();
                 }
@@ -1202,11 +1214,13 @@ impl App {
                     self.settings.show_cast = !self.settings.show_cast;
                     self.save_settings();
                 }
-                if ui::ribbon_button(ui, Icon::List, "", "Scenes · Ctrl+Shift+I", self.settings.show_scenes) {
+                let tip = format!("Scenes · {}", self.keys_for(keys::Command::ToggleScenes));
+                if ui::ribbon_button(ui, Icon::List, "", &tip, self.settings.show_scenes) {
                     self.settings.show_scenes = !self.settings.show_scenes;
                     self.save_settings();
                 }
-                if ui::ribbon_button(ui, Icon::Sidebar, "", "Library · Ctrl+B", self.settings.show_library) {
+                let tip = format!("Library · {}", self.keys_for(keys::Command::ToggleLibrary));
+                if ui::ribbon_button(ui, Icon::Sidebar, "", &tip, self.settings.show_library) {
                     self.settings.show_library = !self.settings.show_library;
                     self.save_settings();
                 }
@@ -1291,8 +1305,9 @@ impl App {
         let wide = room > 400.0 + 110.0 + 120.0 + if acts { 104.0 } else { 0.0 };
         let mut wanted: Option<Element> = None;
         if wide {
-            for e in Element::ALL {
-                if element_chip(ui, e, current == Some(e)) {
+            for (k, e) in Element::ALL.into_iter().enumerate() {
+                let chord = self.keys_for(keys::Command::Element(k as u8 + 1));
+                if element_chip(ui, e, current == Some(e), &chord) {
                     wanted = Some(e);
                 }
             }
@@ -1312,12 +1327,14 @@ impl App {
         }
         ui.add_space(6.0);
         ui.spacing_mut().item_spacing.x = 6.0;
+        let act_tip = format!("A new act, starting at the scene you are in  ·  {}", self.keys_for(keys::Command::NewAct));
+        let export_tip = format!("Export this script as a PDF  ·  {}", self.keys_for(keys::Command::QuickExport));
         if acts
             && ui::ribbon_button(
                 ui,
                 Icon::Star4,
                 "New act",
-                "A new act, starting at the scene you are in  ·  Ctrl+Shift+Enter",
+                &act_tip,
                 false,
             )
             && self.guard_edit()
@@ -1328,7 +1345,7 @@ impl App {
             ui,
             Icon::Print,
             "Quick Export",
-            "Export this script as a PDF  ·  Ctrl+E",
+            &export_tip,
             false,
         ) {
             self.export(Format::Pdf, true);
@@ -1340,7 +1357,8 @@ impl App {
 
     fn cards_tools(&mut self, ui: &mut egui::Ui, room: f32) {
         ui.spacing_mut().item_spacing.x = 6.0;
-        if ui::ribbon_button(ui, Icon::Plus, "New scene", "A new scene after the one you are in  ·  Ctrl+Enter", false) {
+        let tip = format!("A new scene after the one you are in  ·  {}", self.keys_for(keys::Command::NewScene));
+        if ui::ribbon_button(ui, Icon::Plus, "New scene", &tip, false) {
             self.new_scene();
             self.mode = Mode::Cards;
         }
@@ -1370,10 +1388,12 @@ impl App {
             self.lock_chip(ui);
             ui.add_space(4.0);
         }
-        if ui::ribbon_button(ui, Icon::Print, "Quick Export", "Export this script as a PDF  ·  Ctrl+E", false) {
+        let tip = format!("Export this script as a PDF  ·  {}", self.keys_for(keys::Command::QuickExport));
+        if ui::ribbon_button(ui, Icon::Print, "Quick Export", &tip, false) {
             self.export(Format::Pdf, true);
         }
-        if ui::ribbon_button(ui, Icon::Download, "Export…", "Choose pages and colours  ·  Ctrl+Shift+E", self.popover == Some(Popover::Export)) {
+        let tip = format!("Choose pages and colours  ·  {}", self.keys_for(keys::Command::ExportWindow));
+        if ui::ribbon_button(ui, Icon::Download, "Export…", &tip, self.popover == Some(Popover::Export)) {
             self.open_export_window();
         }
         let left = (room - ui.min_rect().width()).max(0.0);
@@ -1420,7 +1440,7 @@ impl App {
                         ui.horizontal(|ui| {
                             let w = ui.available_width() - 38.0;
                             if self.can_write() {
-                                if new_script_button(ui, w) {
+                                if new_script_button(ui, w, &self.keys_for(keys::Command::NewScript)) {
                                     self.new_script();
                                 }
                                 if ui::icon_button(ui, Icon::Upload, "Import Fountain, Final Draft or markdown  ·  or drop a file on the window", 32.0) {
@@ -3151,7 +3171,7 @@ impl App {
                     let labels: Vec<String> = Element::ALL
                         .iter()
                         .enumerate()
-                        .map(|(k, e)| format!("{}  ·  Ctrl+{}", e.label(), k + 1))
+                        .map(|(k, e)| format!("{}  ·  {}", e.label(), self.keys_for(keys::Command::Element(k as u8 + 1))))
                         .collect();
                     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
                     ui.set_width(ui::menu_width(ui, &refs));
@@ -3427,17 +3447,19 @@ impl App {
         let p = pal();
         let screen = ctx.screen_rect();
         let before = self.settings.clone();
-        let mut tabs: Vec<(&str, Icon)> = vec![
-            ("Appearance", Icon::Palette),
-            ("The page", Icon::File),
-            ("Colour", Icon::Eye),
-            ("Panels", Icon::Sidebar),
-            ("Writing & saving", Icon::Pencil),
-            ("YouTrack", Icon::External),
-            ("About", Icon::Info),
+        // (name, icon, which pane): listed in this order
+        let mut tabs: Vec<(&str, Icon, usize)> = vec![
+            ("Appearance", Icon::Palette, 0),
+            ("The page", Icon::File, 1),
+            ("Colour", Icon::Eye, 2),
+            ("Panels", Icon::Sidebar, 3),
+            ("Writing & saving", Icon::Pencil, 4),
+            ("YouTrack", Icon::External, 5),
+            ("About", Icon::Info, 6),
         ];
         if self.store.team().is_some() {
-            tabs.push(("Team", Icon::Users));
+            tabs.insert(5, ("Keyboard", Icon::Keyboard, KEYS_TAB));
+            tabs.push(("Team", Icon::Users, TEAM_TAB));
         }
         let tabs = tabs;
 
@@ -3471,7 +3493,15 @@ impl App {
         let t = anim::ease(ctx, "ns-settings-rise", true, 0.30);
         let scale = 0.97 + 0.03 * t;
         let rect = Rect::from_center_size(screen.center(), size * scale);
-        let tab = self.settings_tab.min(tabs.len() - 1);
+        // a pane this library does not have falls back to the last one
+        let tab = if tabs.iter().any(|t| t.2 == self.settings_tab) {
+            self.settings_tab
+        } else {
+            tabs[tabs.len() - 1].2
+        };
+        if tab != KEYS_TAB {
+            self.key_capture = None;
+        }
 
         egui::Area::new(egui::Id::new("ns-settings"))
             .order(egui::Order::Foreground)
@@ -3525,9 +3555,9 @@ impl App {
                 );
                 n.spacing_mut().item_spacing.y = 2.0;
                 let mut picked = None;
-                for (k, (label, icon)) in tabs.iter().enumerate() {
-                    if settings_tab_row(&mut n, label, *icon, k == tab) {
-                        picked = Some(k);
+                for (label, icon, id) in tabs.iter() {
+                    if settings_tab_row(&mut n, label, *icon, *id == tab) {
+                        picked = Some(*id);
                     }
                 }
                 if let Some(k) = picked {
@@ -3558,8 +3588,9 @@ impl App {
                         .max_rect(pane.shrink2(Vec2::new(18.0, 14.0)))
                         .layout(Layout::top_down(Align::Min)),
                 );
+                let name = tabs.iter().find(|t| t.2 == tab).map(|t| t.0).unwrap_or("");
                 pane_ui.label(
-                    egui::RichText::new(tabs[tab].0)
+                    egui::RichText::new(name)
                         .font(theme::font_semi(theme::T_H - 1.0))
                         .color(p.text),
                 );
@@ -3925,6 +3956,7 @@ impl App {
             );
             }
             TEAM_TAB => self.team_settings(ui),
+            KEYS_TAB => self.keyboard_settings(ui),
             6 => {
             ui::section(ui, "Where things live");
             ui.label(
@@ -3971,104 +4003,12 @@ impl App {
     // ---------- keys ----------
 
     fn shortcuts(&mut self, ctx: &egui::Context) {
-        use egui::{Key, KeyboardShortcut, Modifiers};
-        let hit =
-            |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
-
-        if hit(Modifiers::COMMAND, Key::S) && self.guard_edit() {
-            self.save(true);
-            self.deck.ok("Saved", "");
-        }
-        // A browser keeps Ctrl+N for a new window and never hands it over, so
-        // the web build takes Ctrl+Alt+N as well (checked first: egui lets an
-        // extra Alt through to the plainer chord).
-        if ((crate::WEB && hit(Modifiers::COMMAND | Modifiers::ALT, Key::N)) || hit(Modifiers::COMMAND, Key::N))
-            && self.can_write()
-        {
-            self.new_script();
-        }
-        if (hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z) || hit(Modifiers::COMMAND, Key::Y)) && self.guard_edit() {
-            self.redo();
-        }
-        if hit(Modifiers::COMMAND, Key::Z) && self.guard_edit() {
-            self.undo();
-        }
-        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::F) {
-            self.settings.show_library = true;
-            self.focus_search = true;
-        } else if (hit(Modifiers::COMMAND, Key::F) || hit(Modifiers::COMMAND, Key::H)) && self.guard_edit() {
-            self.mode = Mode::Write;
-            self.find.open = true;
-            self.find.focus = true;
-        }
-        if hit(Modifiers::COMMAND, Key::B) {
-            self.settings.show_library = !self.settings.show_library;
-            self.save_settings();
-        }
-        // the more specific chord first: egui lets an extra Shift through
-        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::I) {
-            self.settings.show_scenes = !self.settings.show_scenes;
-            self.save_settings();
-        } else if hit(Modifiers::COMMAND, Key::I) {
-            self.settings.show_details = !self.settings.show_details;
-            self.save_settings();
-        }
-        if hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::E) {
-            self.open_export_window();
-        } else if hit(Modifiers::COMMAND, Key::E) {
-            self.export(Format::Pdf, true);
-        }
-        if hit(Modifiers::COMMAND, Key::Comma) {
-            self.toggle_popover(Popover::Settings);
-        }
-        if hit(Modifiers::COMMAND, Key::Period) {
-            self.focus_mode = !self.focus_mode;
-        }
-        if hit(Modifiers::COMMAND, Key::G) && self.guard_edit() {
-            self.mode = Mode::from_index((self.mode.index() + 1) % 3);
-        }
-        // a new act is the team edition's, for now (checked first: egui lets
-        // an extra Shift through to the plainer chord)
-        if self.team_edition() && hit(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter) {
-            if self.guard_edit() {
-                self.new_act();
-            }
-        } else if hit(Modifiers::COMMAND, Key::Enter) && self.guard_edit() {
-            self.new_scene();
-        }
-        let mut px = None;
-        if hit(Modifiers::COMMAND, Key::Plus) || hit(Modifiers::COMMAND, Key::Equals) {
-            px = Some((self.ed.font_px + 1.0).min(26.0));
-        }
-        if hit(Modifiers::COMMAND, Key::Minus) {
-            px = Some((self.ed.font_px - 1.0).max(11.0));
-        }
-        if let Some(px) = px {
-            self.ed.font_px = px;
-            self.settings.page_px = px;
-            self.save_settings();
-        }
-
-        const DIGITS: [Key; 7] = [
-            Key::Num1,
-            Key::Num2,
-            Key::Num3,
-            Key::Num4,
-            Key::Num5,
-            Key::Num6,
-            Key::Num7,
-        ];
-        for (i, k) in DIGITS.iter().enumerate() {
-            // Ctrl+1–7 switch tabs in a browser; Alt+1–7 there as well
-            if (crate::WEB && hit(Modifiers::ALT, *k)) || hit(Modifiers::COMMAND, *k) {
-                if !self.guard_edit() {
-                    continue;
-                }
-                if let Some(e) = Element::from_digit(i + 1) {
-                    if editor::set_element(&mut self.doc, &mut self.ed, e) {
-                        self.mark_changed();
-                    }
-                }
+        use egui::Key;
+        // every chord, yours or the default, the most specific first
+        let commands = self.commands();
+        for (cmd, chord) in self.settings.keys.listen(&commands, crate::WEB) {
+            if ctx.input_mut(|i| i.consume_shortcut(&chord)) {
+                self.run(cmd);
             }
         }
 
@@ -4083,16 +4023,122 @@ impl App {
         }
     }
 
+    /// What the shortcuts can reach here. A new act is the team edition's,
+    /// for now; without it, Ctrl+Shift+Enter is the plainer Ctrl+Enter.
+    fn commands(&self) -> Vec<keys::Command> {
+        keys::Command::ALL
+            .into_iter()
+            .filter(|c| *c != keys::Command::NewAct || self.team_edition())
+            .collect()
+    }
+
+    /// The chord shown for a command in a tooltip: yours, or its default.
+    fn keys_for(&self, cmd: keys::Command) -> String {
+        self.settings.keys.label(cmd, crate::WEB)
+    }
+
+    /// Do what a shortcut asks.
+    fn run(&mut self, cmd: keys::Command) {
+        use keys::Command as C;
+        match cmd {
+            C::Save => {
+                if self.guard_edit() {
+                    self.save(true);
+                    self.deck.ok("Saved", "");
+                }
+            }
+            C::NewScript => {
+                if self.can_write() {
+                    self.new_script();
+                }
+            }
+            C::Redo => {
+                if self.guard_edit() {
+                    self.redo();
+                }
+            }
+            C::Undo => {
+                if self.guard_edit() {
+                    self.undo();
+                }
+            }
+            C::FindScripts => {
+                self.settings.show_library = true;
+                self.focus_search = true;
+            }
+            C::Find => {
+                if self.guard_edit() {
+                    self.mode = Mode::Write;
+                    self.find.open = true;
+                    self.find.focus = true;
+                }
+            }
+            C::ToggleLibrary => {
+                self.settings.show_library = !self.settings.show_library;
+                self.save_settings();
+            }
+            C::ToggleScenes => {
+                self.settings.show_scenes = !self.settings.show_scenes;
+                self.save_settings();
+            }
+            C::ToggleDetails => {
+                self.settings.show_details = !self.settings.show_details;
+                self.save_settings();
+            }
+            C::ExportWindow => self.open_export_window(),
+            C::QuickExport => self.export(Format::Pdf, true),
+            C::Settings => self.toggle_popover(Popover::Settings),
+            C::FocusMode => self.focus_mode = !self.focus_mode,
+            C::NextView => {
+                if self.guard_edit() {
+                    self.mode = Mode::from_index((self.mode.index() + 1) % 3);
+                }
+            }
+            C::NewAct => {
+                if self.team_edition() && self.guard_edit() {
+                    self.new_act();
+                }
+            }
+            C::NewScene => {
+                if self.guard_edit() {
+                    self.new_scene();
+                }
+            }
+            C::Bigger | C::Smaller => {
+                let px = if cmd == C::Bigger {
+                    (self.ed.font_px + 1.0).min(26.0)
+                } else {
+                    (self.ed.font_px - 1.0).max(11.0)
+                };
+                self.ed.font_px = px;
+                self.settings.page_px = px;
+                self.save_settings();
+            }
+            C::Element(n) => {
+                if !self.guard_edit() {
+                    return;
+                }
+                if let Some(e) = Element::from_digit(n as usize) {
+                    if editor::set_element(&mut self.doc, &mut self.ed, e) {
+                        self.mark_changed();
+                    }
+                }
+            }
+        }
+    }
+
     /// Keys on the script picker.
     fn home_shortcuts(&mut self, ctx: &egui::Context) {
-        use egui::{Key, KeyboardShortcut, Modifiers};
-        let hit =
-            |m: Modifiers, k: Key| ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(m, k)));
-        if (hit(Modifiers::COMMAND | Modifiers::ALT, Key::N) || hit(Modifiers::COMMAND, Key::N)) && self.can_write() {
-            self.new_script();
-        }
-        if hit(Modifiers::COMMAND, Key::Comma) {
-            self.toggle_popover(Popover::Settings);
+        use egui::Key;
+        use keys::Command as C;
+        for (cmd, chord) in self.settings.keys.listen(&[C::NewScript, C::Settings], crate::WEB) {
+            if ctx.input_mut(|i| i.consume_shortcut(&chord)) {
+                match cmd {
+                    C::NewScript if self.can_write() => self.new_script(),
+                    C::Settings => self.toggle_popover(Popover::Settings),
+                    _ => {}
+                }
+            }
         }
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             self.popover = None;
@@ -4241,7 +4287,9 @@ impl App {
             self.blur.reshape(size.x as u32, size.y as u32, radius as u32);
         }
 
-        if !self.deck.asking() {
+        if self.key_capture.is_some() {
+            self.capture_chord(ctx);
+        } else if !self.deck.asking() {
             if self.home {
                 self.home_shortcuts(ctx);
             } else {
@@ -4513,6 +4561,18 @@ impl App {
     pub fn debug_home_order(&self) -> Vec<PathBuf> {
         self.home_order.clone()
     }
+    pub fn debug_capture_keys(&mut self, cmd: keys::Command) {
+        self.key_capture = Some(cmd);
+    }
+    pub fn debug_key_capture(&self) -> Option<keys::Command> {
+        self.key_capture
+    }
+    pub fn debug_key_refusal(&self) -> Option<String> {
+        self.key_refusal.as_ref().map(|(_, w)| w.clone())
+    }
+    pub fn debug_close_popover(&mut self) {
+        self.popover = None;
+    }
     pub fn debug_open_voice_picker(&mut self, name: &str) {
         self.open_voice_picker(name, Pos2::new(400.0, 300.0));
     }
@@ -4546,7 +4606,7 @@ impl eframe::App for App {
 // ---------- small pieces ----------
 
 /// The one button that should catch your eye when the app opens.
-fn new_script_button(ui: &mut egui::Ui, width: f32) -> bool {
+fn new_script_button(ui: &mut egui::Ui, width: f32, chord: &str) -> bool {
     let p = pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
     let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
@@ -4584,12 +4644,12 @@ fn new_script_button(ui: &mut egui::Ui, width: f32) -> bool {
         theme::font_semi(theme::T_SM),
         ink,
     );
-    resp.on_hover_text("New script  ·  Ctrl+N").clicked()
+    resp.on_hover_text(format!("New script  ·  {chord}")).clicked()
 }
 
 /// One element in the ribbon's palette. Nothing until you reach for it; the
 /// element the caret is in stands lit.
-fn element_chip(ui: &mut egui::Ui, e: Element, on: bool) -> bool {
+fn element_chip(ui: &mut egui::Ui, e: Element, on: bool, chord: &str) -> bool {
     let p = pal();
     let galley = ui.painter().layout_no_wrap(
         e.short().to_string(),
@@ -4616,8 +4676,7 @@ fn element_chip(ui: &mut egui::Ui, e: Element, on: bool) -> bool {
         galley,
         ink,
     );
-    let k = Element::ALL.iter().position(|x| *x == e).unwrap_or(0) + 1;
-    resp.on_hover_text(format!("{}  ·  Ctrl+{k}", e.label())).clicked()
+    resp.on_hover_text(format!("{}  ·  {chord}", e.label())).clicked()
 }
 
 /// How far a script sits in from the header of the section it is under.

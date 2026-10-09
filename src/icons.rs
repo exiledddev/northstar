@@ -83,6 +83,8 @@ pub enum Icon {
     SignOut,
     /// Discord's mark, simplified to a line glyph for the sign-in button.
     Discord,
+    /// A keyboard: Settings → Keyboard.
+    Keyboard,
 }
 
 /// Paint `icon` inside `rect`.
@@ -647,6 +649,18 @@ pub fn draw_weighted(
             boxed(p(0.22, 0.46), p(0.78, 0.86), 0.08);
             line(vec![p(0.34, 0.46), p(0.34, 0.32), p(0.40, 0.20), p(0.50, 0.16), p(0.60, 0.20), p(0.66, 0.32), p(0.66, 0.46)]);
             seg(p(0.50, 0.60), p(0.50, 0.72));
+        }
+
+        Icon::Keyboard => {
+            boxed(p(0.10, 0.26), p(0.90, 0.74), 0.08);
+            // two rows of keys, and the space bar
+            for x in [0.26, 0.42, 0.58, 0.74] {
+                seg(p(x - 0.02, 0.40), p(x + 0.02, 0.40));
+            }
+            for x in [0.34, 0.50, 0.66] {
+                seg(p(x - 0.02, 0.51), p(x + 0.02, 0.51));
+            }
+            seg(p(0.32, 0.62), p(0.68, 0.62));
         }
 
         Icon::SignOut => {

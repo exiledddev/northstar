@@ -967,3 +967,72 @@ fn the_colour_mode_is_remembered_and_written_only_once_chosen() {
     assert!(Settings::parse(&text).custom_colors);
     assert!(!Settings::parse(&plain).custom_colors);
 }
+
+// ------------------------------------------------------------- shortcuts --
+
+#[test]
+fn every_default_shortcut_reads_back_and_the_specific_chord_is_heard_first() {
+    use crate::keys::{self, Command, Keymap};
+    use eframe::egui::{Key, KeyboardShortcut, Modifiers};
+    for web in [false, true] {
+        for cmd in Command::ALL {
+            assert_eq!(Command::from_slug(&cmd.slug()), Some(cmd));
+            for k in cmd.defaults(web) {
+                assert_eq!(keys::parse(&keys::text(&k)), Some(k), "{}", keys::text(&k));
+            }
+        }
+        // a chord with Shift or Alt is asked for before the plainer one with
+        // the same key, as the hand-written order always had it
+        let order = Keymap::default().listen(&Command::ALL, web);
+        for (i, (_, a)) in order.iter().enumerate() {
+            for (_, b) in &order[i + 1..] {
+                let more = |x: &KeyboardShortcut| x.modifiers.shift as u8 + x.modifiers.alt as u8;
+                if a.logical_key == b.logical_key {
+                    assert!(more(a) >= more(b), "{} before {}", keys::text(a), keys::text(b));
+                }
+            }
+        }
+    }
+    assert_eq!(keys::text(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)), "Ctrl+,");
+    assert_eq!(keys::parse("Ctrl++"), Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus)));
+    assert_eq!(keys::parse("ctrl+shift+enter"), Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter)));
+    assert_eq!(keys::parse("Hyper+Q"), None);
+    assert_eq!(Keymap::default().label(Command::NewScript, true), "Ctrl+Alt+N");
+    assert_eq!(Keymap::default().label(Command::Element(3), true), "Alt+3");
+    assert_eq!(Keymap::default().label(Command::Element(3), false), "Ctrl+3");
+}
+
+#[test]
+fn a_chosen_shortcut_is_kept_only_while_it_differs_from_the_default() {
+    use crate::keys::{self, Command, Keymap};
+    use crate::settings::Settings;
+    use eframe::egui::{Key, KeyboardShortcut, Modifiers};
+    let alt_d = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::D);
+    let mut s = Settings::default();
+    assert!(!s.serialize().contains("key."), "nothing chosen, nothing written");
+    s.keys.set(Command::ToggleDetails, alt_d, true);
+    assert_eq!(s.keys.chords(Command::ToggleDetails, true), vec![alt_d]);
+    let text = s.serialize();
+    assert!(text.contains("key.details = Ctrl+Alt+D\n"), "{text}");
+    let back = Settings::parse(&text);
+    assert_eq!(back.keys, s.keys);
+    // choosing the default again is the default
+    s.keys.set(Command::ToggleDetails, KeyboardShortcut::new(Modifiers::COMMAND, Key::I), true);
+    assert!(s.keys.is_default());
+    // who already has a chord
+    let km = Keymap::default();
+    let ctrl_s = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+    assert_eq!(km.taken_by(&ctrl_s, Command::Undo, &Command::ALL, false), Some(Command::Save));
+    assert_eq!(km.taken_by(&ctrl_s, Command::Save, &Command::ALL, false), None);
+    // what cannot be a shortcut
+    let refuse = |m: Modifiers, k: Key, web: bool| keys::refused(&KeyboardShortcut::new(m, k), web);
+    assert!(refuse(Modifiers::NONE, Key::Q, false).is_some(), "a plain key is for typing");
+    assert!(refuse(Modifiers::SHIFT, Key::Enter, false).is_some());
+    assert!(refuse(Modifiers::NONE, Key::F2, false).is_none(), "function keys are fine bare");
+    assert!(refuse(Modifiers::COMMAND, Key::W, true).is_some(), "a browser keeps Ctrl+W");
+    assert!(refuse(Modifiers::COMMAND, Key::Num4, true).is_some());
+    assert!(refuse(Modifiers::ALT, Key::Num4, true).is_none());
+    assert!(refuse(Modifiers::COMMAND, Key::V, false).is_some());
+    assert!(refuse(Modifiers::ALT, Key::ArrowUp, false).is_some());
+    assert!(refuse(Modifiers::COMMAND | Modifiers::ALT, Key::D, true).is_none());
+}
