@@ -363,8 +363,9 @@ them in the browser: that uploads copies.
 
 Three things are made only in the browser, for now:
 
-- **Acts.** *New act* (or Ctrl+Shift+Enter) starts an act at the scene you
-  are in. In the script it is a wide divider with its own constellation; in
+- **Acts.** *New act* (or Ctrl+Shift+Enter) starts an act where the cursor
+  is: on the next line, or with the scene when the cursor is in its heading.
+  In the script it is a wide divider with its own constellation; in
   print every act starts a new page with its title centred, bold and
   underlined, and closes with a centred `END OF ACT ONE`. In the file it is a
   level-one heading, `# ACT ONE`. Fountain and Final Draft carry acts both
@@ -388,7 +389,7 @@ without acts or chosen colours are written exactly as before.
 ## Development
 
 ```bash
-cargo test          # 100 tests: behaviour, files, formats, headless UI, team screens
+cargo test          # 101 tests: behaviour, files, formats, headless UI, team screens
 cargo build --lib --target wasm32-unknown-unknown   # the library builds for the browser too
 cargo run --example team_demo                       # the team screens, no server needed
 cargo build --release
