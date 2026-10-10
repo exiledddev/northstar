@@ -4,7 +4,7 @@
 //! grows into the application when it is done. That is what makes a splash
 //! feel like a splash rather than a loading screen.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 
@@ -92,7 +92,8 @@ impl Splash {
                     13.0,
                     p.sec_grad.1,
                     44.0,
-                    0.55 * alpha * (0.7 + 0.3 * anim::breathe(ui.ctx(), 2.6)),
+                    // the card's one focal point: soft, and still
+                    0.22 * alpha,
                 );
                 logo::paint(painter, mark, 0.0);
 

@@ -599,16 +599,16 @@ pub fn palette(id: ThemeId, dark: bool) -> Palette {
             text_dim: c(0xA9, 0xA3, 0xB3),
             text_faint: c(0x71, 0x6B, 0x7B),
             ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0xC8, 0x3C, 0xDB),
-            primary_light: c(0xE3, 0x86, 0xF0),
+            primary: c(0xB0, 0x52, 0xC4),
+            primary_light: c(0xD4, 0x9A, 0xE0),
             primary_deep: c(0x4E, 0x12, 0x78),
             primary_quiet: c(0x1D, 0x10, 0x25),
             primary_quiet_hi: c(0x2A, 0x15, 0x37),
-            prim_grad: (c(0x3A, 0x0C, 0xA3), c(0xC2, 0x00, 0xC8)),
-            sec: c(0xF8, 0x8A, 0x3A),
-            sec_light: c(0xFD, 0xC0, 0x45),
+            prim_grad: (c(0x45, 0x26, 0x8E), c(0xA2, 0x3E, 0xB2)),
+            sec: c(0xE8, 0x92, 0x4E),
+            sec_light: c(0xF0, 0xBE, 0x62),
             sec_deep: c(0xA8, 0x2E, 0x6A),
-            sec_grad: (c(0xE0, 0x33, 0x9B), c(0xFD, 0xB7, 0x2B)),
+            sec_grad: (c(0xC8, 0x4C, 0x8E), c(0xF0, 0xB4, 0x55)),
             danger: c(0xFF, 0x4F, 0x5E),
             danger_light: c(0xFF, 0x82, 0x8B),
             warn: c(0xFD, 0xB3, 0x2A),
@@ -645,11 +645,11 @@ pub fn palette(id: ThemeId, dark: bool) -> Palette {
             primary_deep: c(0x4A, 0x0A, 0x6E),
             primary_quiet: c(0xF6, 0xE7, 0xF8),
             primary_quiet_hi: c(0xEE, 0xD5, 0xF2),
-            prim_grad: (c(0x3A, 0x0C, 0xA3), c(0xB0, 0x10, 0xB8)),
+            prim_grad: (c(0x4A, 0x2E, 0x96), c(0x96, 0x34, 0xA6)),
             sec: c(0xE0, 0x6E, 0x10),
             sec_light: c(0xF2, 0x98, 0x1C),
             sec_deep: c(0x9A, 0x22, 0x5C),
-            sec_grad: (c(0xD0, 0x28, 0x86), c(0xF5, 0xA2, 0x1A)),
+            sec_grad: (c(0xB8, 0x3A, 0x7C), c(0xE0, 0x96, 0x2E)),
             danger: c(0xC4, 0x28, 0x3A),
             danger_light: c(0xE0, 0x50, 0x5E),
             warn: c(0xB0, 0x7A, 0x0E),
@@ -1282,7 +1282,13 @@ pub fn island_frame(radius: f32) -> egui::Frame {
         })
 }
 
-/// Text drawn one glyph at a time so letter-spacing can be applied.
+/// Letter-spaced text, laid out as one run.
+///
+/// Placing glyphs one at a time — measuring each and adding the tracking by
+/// hand — snaps every glyph to a whole pixel on its own and drops the font's
+/// kerning, and the gaps between letters come out uneven. egui can space a
+/// run itself; laid out once, the spacing is even at any size. Returns the
+/// width drawn.
 pub fn tracked_text(
     painter: &egui::Painter,
     left_centre: Pos2,
@@ -1291,21 +1297,50 @@ pub fn tracked_text(
     color: Color32,
     tracking: f32,
 ) -> f32 {
-    let ctx = painter.ctx();
-    let mut x = left_centre.x;
-    for ch in text.chars() {
-        let s = ch.to_string();
-        let w = ctx.fonts(|f| f.layout_no_wrap(s.clone(), font.clone(), color).rect.width());
-        painter.text(
-            Pos2::new(x, left_centre.y),
-            egui::Align2::LEFT_CENTER,
-            &s,
-            font.clone(),
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font,
             color,
-        );
-        x += w + tracking;
+            extra_letter_spacing: tracking,
+            ..Default::default()
+        },
+    );
+    let galley = painter.ctx().fonts(|f| f.layout_job(job));
+    let size = galley.rect.size();
+    painter.galley(
+        Pos2::new(left_centre.x, left_centre.y - size.y * 0.5),
+        galley,
+        color,
+    );
+    // the tracking after the last letter is not part of the word
+    (size.x - tracking).max(0.0)
+}
+
+/// A soft lift under something that floats: several shadows, each wider and
+/// fainter than the last, rather than one hard one or a coloured glow — the
+/// way light really falls off under a card held above a page. `lift` 0..1.
+pub fn lift_shadow(painter: &egui::Painter, rect: Rect, radius: f32, lift: f32) {
+    let p = pal();
+    let lift = lift.clamp(0.0, 1.0);
+    if lift <= 0.01 {
+        return;
     }
-    x - left_centre.x
+    let rounding = Rounding::same(radius.min(rect.width() * 0.5).min(rect.height() * 0.5));
+    let base = if p.dark { 1.0 } else { 0.32 };
+    for (dy, blur, alpha) in [(1.0_f32, 2.0_f32, 60.0_f32), (4.0, 10.0, 38.0), (12.0, 28.0, 26.0)] {
+        painter.add(
+            egui::epaint::Shadow {
+                offset: Vec2::new(0.0, dy * (0.5 + 0.5 * lift)),
+                blur: blur * (0.6 + 0.4 * lift),
+                spread: 0.0,
+                color: Color32::from_black_alpha((alpha * base * lift) as u8),
+            }
+            .as_shape(rect, rounding),
+        );
+    }
 }
 
 // ------------------------------------------------------------------ visuals --
@@ -1370,9 +1405,11 @@ pub fn apply(ctx: &egui::Context) {
     w.open.fg_stroke = Stroke::new(1.0_f32, p.text);
     w.open.rounding = Rounding::same(R_CTRL);
 
-    ctx.set_visuals(v);
-
-    ctx.style_mut(|s| {
+    // The palette says light or dark, not the system. egui keeps a style for
+    // each and picks by the system's setting — which a browser follows, and
+    // which can disagree with the theme chosen here — so both get this one.
+    ctx.all_styles_mut(|s| {
+        s.visuals = v.clone();
         s.spacing.item_spacing = Vec2::new(8.0, 8.0);
         s.spacing.button_padding = Vec2::new(11.0, 6.0);
         s.spacing.window_margin = Margin::same(18.0);
@@ -1404,6 +1441,7 @@ pub fn element_color(e: Element) -> Color32 {
         Element::Dialogue => p.group(2),
         Element::Transition => p.group(4),
         Element::Shot => p.group(5),
+        Element::Act => p.primary_light,
     }
 }
 
@@ -1411,13 +1449,25 @@ pub fn element_color(e: Element) -> Color32 {
 /// next at a glance. Faint enough to read through, never on the printed page.
 pub fn element_band(e: Element) -> Color32 {
     let p = pal();
-    let a = match (e, p.dark) {
-        (Element::Action, true) => 6,
-        (Element::Action, false) => 9,
-        (_, true) => 11,
-        (_, false) => 16,
-    };
-    wash(element_color(e), a)
+    match e {
+        // action is most of any script: it carries no band at all, and an
+        // act draws its own
+        Element::Action | Element::Act => Color32::TRANSPARENT,
+        _ => tint(element_color(e), if p.dark { 0.035 } else { 0.05 }),
+    }
+}
+
+/// `col` laid over whatever is under it at exactly `k` of its strength.
+///
+/// `wash` goes through egui's unmultiplied constructor, which premultiplies
+/// in linear light — so a very low alpha on a bright colour comes out several
+/// times stronger than the number says (alpha 6 on a pale colour lands near
+/// 15%). For the faintest tints, the ones that must stay a whisper, the
+/// colour is premultiplied here, in the same space it is blended in.
+pub fn tint(col: Color32, k: f32) -> Color32 {
+    let k = k.clamp(0.0, 1.0);
+    let f = |v: u8| (v as f32 * k).round() as u8;
+    Color32::from_rgba_premultiplied(f(col.r()), f(col.g()), f(col.b()), (255.0 * k).round() as u8)
 }
 
 /// A colour of its own for each speaking character, in order of first
@@ -1425,14 +1475,70 @@ pub fn element_band(e: Element) -> Color32 {
 /// far apart and a new character never repaints the ones before it. `seed`
 /// turns the whole wheel, for Settings' Shuffle.
 pub fn character_colors(names: &[String], seed: u32) -> std::collections::HashMap<String, Color32> {
-    let p = pal();
+    voice_colors(names, seed, &[])
+}
+
+/// The saturation and lightness a character's colour is drawn at in the app.
+fn voice_sl() -> (f32, f32) {
+    if pal().dark {
+        (0.62, 0.72)
+    } else {
+        (0.66, 0.36)
+    }
+}
+
+/// Every speaker's colour, with the ones `chosen` for them (name, hue 0–359)
+/// kept for continuity: a chosen hue is drawn at the same depth as a dealt
+/// one, so it reads in this theme. Anyone not chosen is dealt one from the
+/// wheel, as in Random. An empty `chosen` is exactly Random.
+pub fn voice_colors(names: &[String], seed: u32, chosen: &[(String, u16)]) -> std::collections::HashMap<String, Color32> {
+    let (s, l) = voice_sl();
+    with_chosen(voices_at(names, seed, s, l), chosen, s, l)
+}
+
+/// The same, as ink for paper.
+pub fn voice_inks(names: &[String], seed: u32, chosen: &[(String, u16)]) -> std::collections::HashMap<String, [u8; 3]> {
+    with_chosen(voices_at(names, seed, 0.70, 0.34), chosen, 0.70, 0.34)
+        .into_iter()
+        .map(|(n, c)| (n, [c.r(), c.g(), c.b()]))
+        .collect()
+}
+
+/// A hue as a character's colour in this theme: what a swatch in the colour
+/// picker shows.
+pub fn voice_of_hue(hue: u16) -> Color32 {
+    let (s, l) = voice_sl();
+    hsl(hue as f32 / 360.0, s, l)
+}
+
+fn with_chosen(
+    mut dealt: std::collections::HashMap<String, Color32>,
+    chosen: &[(String, u16)],
+    s: f32,
+    l: f32,
+) -> std::collections::HashMap<String, Color32> {
+    for (name, hue) in chosen {
+        if let Some(c) = dealt.get_mut(name) {
+            *c = hsl(*hue as f32 / 360.0, s, l);
+        }
+    }
+    dealt
+}
+
+/// The same colours for paper: each speaker keeps their hue — so they are
+/// recognisably the colour they wear in the app — at a depth that reads as
+/// ink on white, whatever theme the app is in.
+pub fn character_inks(names: &[String], seed: u32) -> std::collections::HashMap<String, [u8; 3]> {
+    voice_inks(names, seed, &[])
+}
+
+fn voices_at(names: &[String], seed: u32, s: f32, l: f32) -> std::collections::HashMap<String, Color32> {
     let start = (seed as f32 * 0.137_5).fract();
     names
         .iter()
         .enumerate()
         .map(|(k, n)| {
             let h = (start + k as f32 * 0.618_034).fract();
-            let (s, l) = if p.dark { (0.62, 0.72) } else { (0.66, 0.36) };
             (n.clone(), hsl(h, s, l))
         })
         .collect()
@@ -1466,7 +1572,7 @@ fn c3(r: u8, g: u8, b: u8) -> Color32 {
 pub fn element_ink(e: Element) -> Color32 {
     let p = pal();
     match e {
-        Element::SceneHeading | Element::Shot | Element::Character => p.text,
+        Element::SceneHeading | Element::Shot | Element::Character | Element::Act => p.text,
         Element::Dialogue => mix(p.text, p.text_dim, 0.15),
         Element::Action => mix(p.text, p.text_dim, 0.35),
         Element::Parenthetical | Element::Transition => p.text_dim,

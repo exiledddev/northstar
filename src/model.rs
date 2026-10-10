@@ -14,6 +14,7 @@
 //!   Dialogue       10   (2.5" on page)   3.5" wide
 //!   Transition     45   (6.0" on page)   ALL CAPS
 //!   Shot            0   (1.5" on page)   ALL CAPS
+//!   Act             centred, on a page of its own start, ALL CAPS
 
 /// Width of the printable text column, in characters.
 pub const PAGE_COLS: usize = 60;
@@ -29,6 +30,10 @@ pub enum Element {
     Dialogue,
     Transition,
     Shot,
+    /// The start of an act: it always begins a new page, and the act it
+    /// opens runs to the next one. Not part of `ALL`, so the element chips,
+    /// Tab cycling and Ctrl+1–7 never reach it; acts are added on purpose.
+    Act,
 }
 
 use Element::*;
@@ -53,6 +58,7 @@ impl Element {
             Dialogue => "Dialogue",
             Transition => "Transition",
             Shot => "Shot",
+            Act => "Act",
         }
     }
 
@@ -66,13 +72,14 @@ impl Element {
             Dialogue => "DIALOG",
             Transition => "TRANS",
             Shot => "SHOT",
+            Act => "ACT",
         }
     }
 
     /// Indent from the left text margin, in characters.
     pub fn indent_cols(self) -> usize {
         match self {
-            SceneHeading | Action | Shot => 0,
+            SceneHeading | Action | Shot | Act => 0,
             Character => 22,
             Parenthetical => 16,
             Dialogue => 10,
@@ -83,7 +90,7 @@ impl Element {
     /// Wrapping width, in characters.
     pub fn width_cols(self) -> usize {
         match self {
-            SceneHeading | Action | Shot => 60,
+            SceneHeading | Action | Shot | Act => 60,
             Character => 38,
             Parenthetical => 28,
             Dialogue => 35,
@@ -92,7 +99,7 @@ impl Element {
     }
 
     pub fn is_upper(self) -> bool {
-        matches!(self, SceneHeading | Character | Transition | Shot)
+        matches!(self, SceneHeading | Character | Transition | Shot | Act)
     }
 
     /// Blank lines emitted before this element when printing.
@@ -100,7 +107,8 @@ impl Element {
         match self {
             SceneHeading => 2,
             Action | Character | Transition | Shot => 1,
-            Parenthetical | Dialogue => 0,
+            // the new page is its spacing
+            Parenthetical | Dialogue | Act => 0,
         }
     }
 
@@ -114,6 +122,7 @@ impl Element {
             Parenthetical => Dialogue,
             Dialogue => Action,
             Transition => SceneHeading,
+            Act => SceneHeading,
         }
     }
 
@@ -135,7 +144,7 @@ impl Element {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub id: u64,
     pub element: Element,
@@ -159,7 +168,7 @@ impl Block {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Meta {
     pub title: String,
     pub author: String,
@@ -167,9 +176,28 @@ pub struct Meta {
     pub draft: String,
     /// Gathered at the top of the library.
     pub starred: bool,
+    /// Characters given a colour of their own, for continuity: base name (as
+    /// `base_character` gives it) and a hue, 0–359. The colour is drawn at the
+    /// theme's lightness, so it reads in every theme and in print.
+    pub voices: Vec<(String, u16)>,
 }
 
-#[derive(Clone, Debug)]
+impl Meta {
+    /// The hue `name` was given, if any.
+    pub fn voice(&self, name: &str) -> Option<u16> {
+        self.voices.iter().find(|(n, _)| n == name).map(|(_, h)| *h)
+    }
+
+    /// Give `name` a hue of its own, or (`None`) hand it back to chance.
+    pub fn set_voice(&mut self, name: &str, hue: Option<u16>) {
+        self.voices.retain(|(n, _)| n != name);
+        if let Some(h) = hue {
+            self.voices.push((name.to_string(), h % 360));
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Document {
     pub meta: Meta,
     pub blocks: Vec<Block>,
@@ -392,16 +420,91 @@ pub struct CastMember {
     pub cue_ids: Vec<u64>,
 }
 
+/// One act: its title block and everything up to the next act.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActSpan {
+    /// The act block's id.
+    pub id: u64,
+    /// 1-based, in script order.
+    pub number: usize,
+    pub title: String,
+    /// Block index range, the act block included, end exclusive.
+    pub start: usize,
+    pub end: usize,
+}
+
+/// What a new act is called: ACT ONE … ACT TWENTY, then ACT 21.
+pub fn act_title(n: usize) -> String {
+    const WORDS: [&str; 20] = [
+        "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT", "NINE", "TEN", "ELEVEN",
+        "TWELVE", "THIRTEEN", "FOURTEEN", "FIFTEEN", "SIXTEEN", "SEVENTEEN", "EIGHTEEN",
+        "NINETEEN", "TWENTY",
+    ];
+    match n.checked_sub(1).and_then(|k| WORDS.get(k)) {
+        Some(w) => format!("ACT {w}"),
+        None => format!("ACT {n}"),
+    }
+}
+
+/// The line that closes an act in print: END OF ACT ONE, END OF TEASER.
+pub fn end_of(title: &str) -> String {
+    let t = title.trim().to_uppercase();
+    if t.is_empty() {
+        "END OF ACT".to_string()
+    } else {
+        format!("END OF {t}")
+    }
+}
+
 impl Document {
-    /// Every scene in the script. Anything before the first heading is not a
-    /// scene and is left out.
-    pub fn scenes(&self) -> Vec<Scene> {
-        let mut out: Vec<Scene> = Vec::new();
+    /// Every act in the script, in order. Empty when the script has none.
+    pub fn acts(&self) -> Vec<ActSpan> {
+        let mut out: Vec<ActSpan> = Vec::new();
         for (i, b) in self.blocks.iter().enumerate() {
-            if b.element == SceneHeading {
+            if b.element == Act {
                 if let Some(last) = out.last_mut() {
                     last.end = i;
                 }
+                out.push(ActSpan {
+                    id: b.id,
+                    number: out.len() + 1,
+                    title: b.text.clone(),
+                    start: i,
+                    end: self.blocks.len(),
+                });
+            }
+        }
+        out
+    }
+
+    /// Which act the block `id` is in, as an index into `acts()`.
+    pub fn act_of(&self, id: u64) -> Option<usize> {
+        let at = self.index_of(id)?;
+        let n = self.blocks[..=at].iter().filter(|b| b.element == Act).count();
+        n.checked_sub(1)
+    }
+
+    /// Every scene in the script. Anything before the first heading is not a
+    /// scene and is left out; a scene ends at the next heading or act.
+    pub fn scenes(&self) -> Vec<Scene> {
+        let mut out: Vec<Scene> = Vec::new();
+        let mut open = false;
+        for (i, b) in self.blocks.iter().enumerate() {
+            if b.element == Act {
+                if open {
+                    if let Some(last) = out.last_mut() {
+                        last.end = i;
+                    }
+                }
+                open = false;
+            }
+            if b.element == SceneHeading {
+                if open {
+                    if let Some(last) = out.last_mut() {
+                        last.end = i;
+                    }
+                }
+                open = true;
                 out.push(Scene {
                     id: b.id,
                     number: out.len() + 1,
@@ -430,6 +533,7 @@ impl Document {
     }
 
     /// Which scene the block `id` belongs to, as an index into `scenes()`.
+    /// An act, and anything between it and its first heading, is in none.
     pub fn scene_of(&self, id: u64) -> Option<usize> {
         let at = self.index_of(id)?;
         let mut found = None;
@@ -441,6 +545,8 @@ impl Document {
             if b.element == SceneHeading {
                 found = Some(n);
                 n += 1;
+            } else if b.element == Act {
+                found = None;
             }
         }
         found

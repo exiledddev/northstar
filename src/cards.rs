@@ -4,13 +4,14 @@
 //! the work is glass in this design — lit from the object outward, lifting
 //! when you reach for it, with the scene's colour as a dot and a breath of
 //! tint through the pane rather than a painted bar. Drag a card by its head
-//! to move the whole scene; write the synopsis straight onto it.
+//! to move the whole scene; write the synopsis straight onto it. An act opens
+//! a new row of the wall with a ribbon across it.
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 
 use crate::anim;
 use crate::icons::Icon;
-use crate::model::{eighths_label, Document, Scene};
+use crate::model::{act_title, eighths_label, ActSpan, Document, Scene};
 use crate::theme::{self, pal};
 use crate::ui;
 
@@ -18,6 +19,9 @@ pub const CARD_W: f32 = 236.0;
 pub const CARD_H: f32 = 156.0;
 const GAP: f32 = 18.0;
 const HEAD_H: f32 = 36.0;
+/// An act's ribbon across the wall, and the room under it.
+const RIBBON_H: f32 = 40.0;
+const RIBBON_GAP: f32 = 12.0;
 
 #[derive(Default)]
 pub struct CardsState {
@@ -39,6 +43,8 @@ pub enum Act {
     Tint(u64, Option<usize>),
     Delete(usize),
     NewScene,
+    /// Go to an act in the script, by its block id.
+    OpenAct(u64),
 }
 
 pub struct Out {
@@ -52,11 +58,13 @@ pub fn show(
     doc: &mut Document,
     st: &mut CardsState,
     lengths: &std::collections::HashMap<u64, (usize, usize)>,
+    act_notes: &std::collections::HashMap<u64, String>,
     live: Option<u64>,
     frame_no: u64,
 ) -> Out {
     let p = pal();
     let scenes = doc.scenes();
+    let acts = doc.acts();
     let mut out = Out {
         changed: false,
         act: None,
@@ -68,20 +76,56 @@ pub fn show(
     let left = ui.min_rect().left() + ((avail - grid_w) * 0.5).max(GAP);
     let top = ui.cursor().top() + 24.0;
 
-    let slot = |k: usize| -> Rect {
-        let (r, c) = (k / cols, k % cols);
-        Rect::from_min_size(
-            Pos2::new(left + c as f32 * (CARD_W + GAP), top + r as f32 * (CARD_H + GAP)),
-            Vec2::new(CARD_W, CARD_H),
-        )
+    // Where every card goes, row by row. An act starts a fresh row with its
+    // ribbon over it; without acts this is the plain grid.
+    let mut slots: Vec<Rect> = Vec::with_capacity(scenes.len() + 1);
+    let mut ribbons: Vec<(Rect, &ActSpan)> = Vec::new();
+    let (mut y, mut c) = (top, 0usize);
+    let mut next_act = 0usize;
+    let mut ribbon = |y: &mut f32, c: &mut usize, a| {
+        if *c > 0 {
+            *y += CARD_H + GAP;
+            *c = 0;
+        }
+        ribbons.push((Rect::from_min_size(Pos2::new(left, *y), Vec2::new(grid_w, RIBBON_H)), a));
+        *y += RIBBON_H + RIBBON_GAP;
     };
-    let total = scenes.len() + 1; // the "new scene" card closes the wall
-    let rows = total.div_ceil(cols);
+    for sc in &scenes {
+        while let Some(a) = acts.get(next_act).filter(|a| a.start < sc.start) {
+            ribbon(&mut y, &mut c, a);
+            next_act += 1;
+        }
+        slots.push(Rect::from_min_size(
+            Pos2::new(left + c as f32 * (CARD_W + GAP), y),
+            Vec2::new(CARD_W, CARD_H),
+        ));
+        c += 1;
+        if c == cols {
+            c = 0;
+            y += CARD_H + GAP;
+        }
+    }
+    for a in &acts[next_act.min(acts.len())..] {
+        ribbon(&mut y, &mut c, a);
+    }
+    // the "new scene" card closes the wall
+    slots.push(Rect::from_min_size(
+        Pos2::new(left + c as f32 * (CARD_W + GAP), y),
+        Vec2::new(CARD_W, CARD_H),
+    ));
+    let slot = |k: usize| slots[k];
+    let bottom = slots.last().map(|r| r.bottom()).unwrap_or(top) + GAP;
     let (whole, _) = ui.allocate_exact_size(
-        Vec2::new(avail, 24.0 + rows as f32 * (CARD_H + GAP) + 60.0),
+        Vec2::new(avail, 24.0 + (bottom - top) + 60.0),
         Sense::hover(),
     );
     let _ = whole;
+
+    for (rect, a) in &ribbons {
+        if act_ribbon(ui, *rect, a, act_notes.get(&a.id).map(String::as_str).unwrap_or("")) {
+            out.act = Some(Act::OpenAct(a.id));
+        }
+    }
 
     if scenes.is_empty() {
         ui.painter().text(
@@ -175,18 +219,14 @@ pub fn show(
     let nr = slot(nk);
     st.new_card_rect = Some(nr);
     let resp = ui.interact(nr, egui::Id::new("ns-card-new"), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.16);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     ui.painter().rect_filled(
         nr,
         egui::Rounding::same(theme::R_CARD),
         theme::wash(p.text_faint, (18.0 + 10.0 * (1.0 - hot)) as u8),
     );
-    if hot > 0.01 {
-        theme::glow_rect(ui.painter(), nr, theme::R_CARD, p.sec, 18.0, hot * 0.30);
-    }
     theme::hover_surface(ui.painter(), nr, theme::R_CARD, p.sec, hot, false);
     let c = nr.center();
-    theme::glow_star(ui.painter(), c - Vec2::new(0.0, 12.0), 7.0, p.sec_grad.1, 18.0, 0.16 + 0.24 * hot);
     theme::grad_star(
         ui.painter(),
         c - Vec2::new(0.0, 12.0),
@@ -243,7 +283,8 @@ pub fn show(
             );
             let moving = at != from && at != from + 1;
             if moving {
-                theme::glow_rect(ui.painter(), bar, 1.5, p.sec_light, 12.0, 0.9);
+                // where it will land: the one light that has a job to do
+                theme::glow_rect(ui.painter(), bar, 1.5, p.sec_light, 10.0, 0.4);
                 ui.painter().rect_filled(bar, egui::Rounding::same(1.5), p.sec_light);
             }
 
@@ -256,7 +297,7 @@ pub fn show(
                     .interactable(false)
                     .show(ui.ctx(), |ui| {
                         let (r, _) = ui.allocate_exact_size(ghost.size(), Sense::hover());
-                        theme::glow_rect(ui.painter(), r, r.height() * 0.5, p.sec, 16.0, 0.35);
+                        theme::lift_shadow(ui.painter(), r, r.height() * 0.5, 1.0);
                         theme::glass_surface(ui.painter(), r, r.height() * 0.5, 0.96);
                         theme::grad_star(ui.painter(), Pos2::new(r.left() + 20.0, r.center().y), 5.5, p.sec_grad.0, p.sec_grad.1);
                         ui.painter().text(
@@ -333,6 +374,69 @@ pub fn show(
     out
 }
 
+/// An act's ribbon across the wall: its star in the primary gradient, its
+/// title tracked, what it holds, and a horizon running out to the right — the
+/// act's divider in the script, in small. Returns true when clicked.
+fn act_ribbon(ui: &mut egui::Ui, rect: Rect, a: &ActSpan, note: &str) -> bool {
+    let p = pal();
+    let resp = ui.interact(rect, egui::Id::new(("ns-act-ribbon", a.id)), Sense::click());
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
+    let k = if p.dark { 1.0 } else { 0.8 };
+    // a whisper of both gradients, fading out to the right
+    theme::fill_grad_poly(
+        ui.painter(),
+        &theme::rounded_poly(rect, theme::R_CARD),
+        theme::tint(p.prim_grad.1, (0.10 + 0.05 * hot) * k),
+        theme::tint(p.sec_grad.1, 0.0),
+        Vec2::new(1.0, 0.0),
+    );
+    let cy = rect.center().y;
+    let star = Pos2::new(rect.left() + 22.0, cy);
+    if hot > 0.01 {
+        theme::glow_star(ui.painter(), star, 6.0, p.prim_grad.1, 14.0, 0.18 * hot);
+    }
+    theme::grad_star(ui.painter(), star, 7.0, p.prim_grad.0, p.prim_grad.1);
+    let title = if a.title.trim().is_empty() { act_title(a.number) } else { a.title.trim().to_string() };
+    let w = theme::tracked_text(
+        ui.painter(),
+        Pos2::new(rect.left() + 40.0, cy),
+        &title,
+        theme::font_semi(theme::T_BODY),
+        p.text,
+        2.4,
+    );
+    let mut x = rect.left() + 40.0 + w + 14.0;
+    if !note.is_empty() {
+        let g = ui.painter().layout_no_wrap(note.to_string(), theme::font(theme::T_CAP), p.text_faint);
+        let nw = g.rect.width();
+        if x + nw + 40.0 < rect.right() {
+            ui.painter().galley(Pos2::new(x, cy - g.rect.height() * 0.5), g, p.text_faint);
+            x += nw + 14.0;
+        }
+    }
+    // the horizon
+    let end = rect.right() - 16.0;
+    if end - x > 24.0 {
+        let line = theme::wash(theme::mix(p.text_faint, p.primary_light, 0.4), 120);
+        theme::fill_grad_poly(
+            ui.painter(),
+            &[
+                Pos2::new(x, cy - 0.5),
+                Pos2::new(end, cy - 0.5),
+                Pos2::new(end, cy + 0.5),
+                Pos2::new(x, cy + 0.5),
+            ],
+            line,
+            theme::wash(line, 0),
+            Vec2::new(1.0, 0.0),
+        );
+    }
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.on_hover_text("Go to this act in the script").clicked()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_card(
     ui: &egui::Ui,
@@ -349,12 +453,12 @@ fn draw_card(
     let painter = ui.painter();
     let radius = theme::R_CARD;
 
-    // On a white page a resting glow is a grey smudge, not light: there the
-    // cards only glow when you reach for one.
-    let rest = if p.dark { 0.10 } else { 0.0 };
-    theme::glow_rect(painter, r, radius, accent, 22.0, (rest + 0.22 * lift) * fade);
-    if selected {
-        theme::glow_rect(painter, r, radius, p.primary, 26.0, 0.30 * fade);
+    // A card lifts on a layered shadow when you reach for it; only on a dark
+    // page does it catch a faint light of its own colour as well. The scene
+    // you are in is marked by its outline, not by light.
+    theme::lift_shadow(painter, r, radius, (0.35 + 0.65 * lift) * fade);
+    if p.dark && lift > 0.01 {
+        theme::glow_rect(painter, r, radius, accent, 16.0, 0.10 * lift * fade);
     }
     if p.dark {
         theme::glass_surface(painter, r, radius, (if selected { 0.96 } else { 0.86 }) * fade);
@@ -394,7 +498,6 @@ fn draw_card(
     // head: the star, the number, the heading
     let cy = r.top() + HEAD_H * 0.5 + 2.0;
     let star = Pos2::new(r.left() + 20.0, cy);
-    theme::glow_star(painter, star, 4.6, p.sec_grad.1, 13.0, (0.10 + 0.22 * lift) * fade);
     theme::grad_star(painter, star, 5.6, p.sec_grad.0, p.sec_grad.1);
     let num = format!("{}", sc.number);
     painter.text(

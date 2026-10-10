@@ -181,6 +181,64 @@ fn files_from_the_first_northstar_still_open_unchanged() {
     assert_eq!(d.blocks[1].element, Element::SceneHeading);
 }
 
+/// Scripts as they sit on a writer's disk today: two written by the first
+/// Northstar, one by this one with a card and a star. Every byte matters —
+/// these are somebody's work.
+const A_REAL_LIBRARY: [(&str, &str); 3] = [
+    (
+        "the-long-way-down.md",
+        "---\ntitle: The Long Way Down\nauthor: A. Writer\ncontact: a.writer@example.com · 555-0100\ndraft: Second Draft — 3 March\n---\n\n## INT. WAREHOUSE - NIGHT\n\nRain hammers the corrugated roof. MARIA moves between the crates, counting doors under her breath — “four, five” — until one isn’t locked.\n\n**MARIA (V.O.)**\n\n*(barely audible)*\n\n> Three, four... there you are.\n\n### ANGLE ON THE DOOR\n\nIt swings inward on its own. Café light spills across the floor.\n\n`SMASH CUT TO:`\n\n## EXT. ROOFTOP - CONTINUOUS\n\n**COLE**\n\n> You came back.\n\n**MARIA (CONT'D)**\n\n> I never left.\n\n`FADE OUT.`\n\n",
+    ),
+    (
+        "untitled-script.md",
+        "---\ntitle: Untitled Script\nauthor: \ncontact: \ndraft: \n---\n\n## INT. KITCHEN - DAY\n\nNothing yet.\n\n",
+    ),
+    (
+        "pilot.md",
+        "---\ntitle: Pilot\nauthor: Sam\ncontact: \ndraft: First Draft\nstarred: yes\n---\n\n## INT. OFFICE - MORNING\n<!-- scene: tint=2 | Sam meets the team. -->\n\nPhones ring.\n\n**SAM**\n\n> Morning.\n\n",
+    ),
+];
+
+#[test]
+fn an_existing_library_is_never_rewritten_by_the_app() {
+    let _g = sandbox("golden");
+    storage::ensure_dirs().unwrap();
+    let dir = storage::scripts_dir();
+    for (name, text) in A_REAL_LIBRARY {
+        std::fs::write(dir.join(name), text).unwrap();
+    }
+    let listing = || {
+        let mut names: Vec<String> = std::fs::read_dir(storage::scripts_dir())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing();
+
+    // starting the app over the library writes nothing
+    let ctx = eframe::egui::Context::default();
+    let mut app = crate::app::App::with_context(&ctx);
+    assert_eq!(listing(), before, "starting up added or removed a file");
+    for (name, text) in A_REAL_LIBRARY {
+        assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), text, "{name} changed on start-up");
+    }
+
+    // opening each one and saving it the way closing the window does
+    // (rename allowed) gives back exactly the same file, under the same name
+    for (name, text) in A_REAL_LIBRARY {
+        let path = dir.join(name);
+        app.debug_open(path.clone());
+        assert_eq!(app.path().as_deref(), Some(path.as_path()));
+        app.debug_save();
+        assert_eq!(app.path().as_deref(), Some(path.as_path()), "{name} was renamed");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{name} changed on save");
+    }
+    assert_eq!(listing(), before, "saving added or removed a file");
+}
+
 #[test]
 fn scenes_and_cast_are_counted_the_way_a_schedule_would() {
     let d = three_scenes();
@@ -530,6 +588,451 @@ fn the_jetbrains_theme_is_one_of_the_set() {
     let p = crate::theme::palette(ThemeId::JetBrains, true);
     // the near-black ground and the warm end of the arches
     assert!(p.backdrop.r() < 0x20 && p.backdrop.g() < 0x20);
-    assert!(p.sec_grad.1.r() > 0xF0 && p.sec_grad.1.g() > 0xA0, "marigold");
+    assert!(p.sec_grad.1.r() >= 0xE8 && p.sec_grad.1.g() > 0xA0, "marigold");
+    // warm, but never pure neon
+    assert!(p.sec_grad.1.b() > 0x30 && p.prim_grad.1.g() > 0x20);
     assert_eq!(ThemeId::ALL.len(), 6);
+}
+
+#[test]
+fn a_tint_is_exactly_as_strong_as_asked() {
+    use eframe::egui::Color32;
+    let c = Color32::from_rgb(200, 100, 50);
+    let t = crate::theme::tint(c, 0.05);
+    assert_eq!(t.a(), 13);
+    assert_eq!((t.r(), t.g(), t.b()), (10, 5, 3), "premultiplied at 5%, not boosted");
+    assert_eq!(crate::theme::tint(c, 0.0), Color32::TRANSPARENT);
+}
+
+#[test]
+fn a_page_selection_reads_like_a_print_dialog() {
+    use export::{describe_pages, parse_page_range as r};
+    assert_eq!(r("1-3, 7, 10-", 12).unwrap(), vec![1, 2, 3, 7, 10, 11, 12]);
+    assert_eq!(r("3", 12).unwrap(), vec![3]);
+    assert_eq!(r("-2", 12).unwrap(), vec![1, 2], "an open start is page 1");
+    assert_eq!(r("7 3;3,1", 12).unwrap(), vec![1, 3, 7], "sorted, without repeats");
+    assert_eq!(r("10-99", 12).unwrap(), vec![10, 11, 12], "a range past the end stops at it");
+    assert_eq!(r("2\u{2013}4", 12).unwrap(), vec![2, 3, 4], "an en dash is a dash");
+    for bad in ["", "0", "5-2", "abc", "13", "1-x"] {
+        assert!(r(bad, 12).is_err(), "{bad:?} should be refused");
+    }
+    assert_eq!(r("20", 12).unwrap_err(), "There are only 12 pages");
+    assert_eq!(describe_pages(&[1, 2, 3, 7, 10, 11, 12]), "1-3, 7, 10-12");
+    assert_eq!(describe_pages(&[4]), "4");
+}
+
+fn long_speeches() -> Document {
+    let mut d = Document::default();
+    d.blocks.clear();
+    d.meta.title = "Voices".into();
+    d.push(Element::SceneHeading, "INT. HALL - NIGHT");
+    for k in 0..40 {
+        d.push(Element::Action, "Somebody crosses the hall and the floor answers every step.");
+        d.push(Element::Character, if k % 2 == 0 { "MARIA" } else { "COLE (V.O.)" });
+        d.push(Element::Parenthetical, "(low)");
+        d.push(Element::Dialogue, "Say it once, say it plainly, and then say nothing at all for the rest of the night.");
+    }
+    d.reseed_ids();
+    d
+}
+
+#[test]
+fn a_pdf_plan_keeps_chosen_pages_their_numbers_and_their_voices() {
+    let d = long_speeches();
+    let total = export::page_count(&d);
+    assert!(total >= 3, "{total}");
+    let inks: std::collections::HashMap<String, [u8; 3]> =
+        [("MARIA".to_string(), [200, 0, 0]), ("COLE".to_string(), [0, 0, 200])].into_iter().collect();
+    let opts = export::PdfOptions {
+        pages: Some(vec![2, total]),
+        voices: Some(inks),
+        ..export::PdfOptions::default()
+    };
+    let plan = export::pdf_plan(&d, &opts);
+    assert_eq!(plan.iter().map(|p| p.number).collect::<Vec<_>>(), vec![2, total], "numbered as in the whole script");
+    for page in &plan {
+        for (line, ink) in &page.lines {
+            match line.element {
+                Some(Element::Action) | Some(Element::SceneHeading) => assert_eq!(*ink, None, "{}", line.text),
+                Some(Element::Character) | Some(Element::Parenthetical) | Some(Element::Dialogue) => {
+                    assert!(ink.is_some(), "speech carries its speaker's ink: {}", line.text)
+                }
+                _ => {}
+            }
+        }
+    }
+    // a speech broken over a page keeps its voice on the next page
+    let all = export::pdf_plan(&d, &export::PdfOptions { voices: opts.voices.clone(), ..Default::default() });
+    for w in all.windows(2) {
+        if let Some((l, ink)) = w[1].lines.iter().find(|(l, _)| l.element.is_some()) {
+            if l.element == Some(Element::Dialogue) {
+                assert!(ink.is_some(), "carried over the break");
+            }
+        }
+    }
+    // without voices, everything is black
+    assert!(export::pdf_plan(&d, &export::PdfOptions::default())
+        .iter()
+        .all(|p| p.lines.iter().all(|(_, i)| i.is_none())));
+}
+
+#[test]
+fn a_pdf_of_some_pages_has_just_those_pages() {
+    let d = long_speeches();
+    let dir = std::env::temp_dir();
+    let count = |path: &std::path::Path| {
+        let b = std::fs::read(path).unwrap();
+        let t = String::from_utf8_lossy(&b);
+        t.matches("/Type /Page\n").count() + t.matches("/Type/Page\n").count()
+            + t.matches("/Type /Page>>").count() + t.matches("/Type/Page/").count()
+            + t.matches("/Type /Page/").count() + t.matches("/Type /Page ").count()
+    };
+    let whole = dir.join(format!("ns-whole-{}.pdf", std::process::id()));
+    export::to_pdf_opts(&d, &whole, &export::PdfOptions::default()).unwrap();
+    let some = dir.join(format!("ns-some-{}.pdf", std::process::id()));
+    let inks = crate::theme::character_inks(&d.speakers(), 0);
+    export::to_pdf_opts(
+        &d,
+        &some,
+        &export::PdfOptions {
+            title_page: false,
+            pages: Some(vec![2]),
+            voices: Some(inks),
+            scene_numbers: true,
+        },
+    )
+    .unwrap();
+    let (w, s) = (count(&whole), count(&some));
+    assert_eq!(w, 1 + export::page_count(&d), "title page and every page");
+    assert_eq!(s, 1, "one chosen page, no title page");
+    assert!(export::to_pdf_opts(
+        &d,
+        &some,
+        &export::PdfOptions { title_page: false, pages: Some(vec![]), ..Default::default() }
+    )
+    .is_err(), "an empty PDF is refused");
+}
+
+#[test]
+fn character_inks_read_on_paper_whatever_the_app_theme() {
+    let names: Vec<String> = (0..9).map(|k| format!("SPEAKER {k}")).collect();
+    for dark in [true, false] {
+        crate::theme::set_palette(ThemeId::JetBrains, dark);
+        let inks = crate::theme::character_inks(&names, 5);
+        let app = crate::theme::character_colors(&names, 5);
+        for n in &names {
+            let [r, g, b] = inks[n];
+            let l = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            assert!(l < 140.0, "{n} is dark enough for white paper ({l})");
+            // the same hue as in the app: the strongest channel agrees
+            let c = app[n];
+            let top = |x: [u8; 3]| (0..3).max_by_key(|&i| x[i]).unwrap();
+            assert_eq!(top([r, g, b]), top([c.r(), c.g(), c.b()]), "{n} keeps its hue");
+        }
+    }
+    // scene numbers used to be one switch; an old file keeps its PDF as it was
+    assert!(Settings::parse("scene_numbers = yes\n").pdf_scene_numbers);
+    assert!(!Settings::parse("scene_numbers = yes\npdf_scene_numbers = no\n").pdf_scene_numbers);
+}
+
+// ------------------------------------------------------------------ acts --
+
+/// Two acts, two scenes each — the second act long enough to run over a page.
+fn two_acts() -> Document {
+    let mut d = Document::default();
+    d.blocks.clear();
+    d.meta.title = "Pilot".into();
+    d.push(Element::Act, "ACT ONE");
+    d.push(Element::SceneHeading, "INT. DINER - DAY");
+    d.push(Element::Action, "Coffee steams.");
+    d.push(Element::SceneHeading, "EXT. LOT - DAY");
+    d.push(Element::Character, "MARIA");
+    d.push(Element::Dialogue, "We're late.");
+    d.push(Element::Act, "ACT TWO");
+    d.push(Element::SceneHeading, "INT. CAR - NIGHT");
+    for k in 0..30 {
+        d.push(Element::Action, &format!("The road unrolls, mile {k} of it, headlights on the white line."));
+    }
+    d.push(Element::SceneHeading, "EXT. MOTEL - NIGHT");
+    d.push(Element::Action, "A sign buzzes.");
+    d.reseed_ids();
+    d
+}
+
+#[test]
+fn acts_are_titled_and_closed_in_words() {
+    use crate::model::{act_title, end_of};
+    assert_eq!(act_title(1), "ACT ONE");
+    assert_eq!(act_title(5), "ACT FIVE");
+    assert_eq!(act_title(20), "ACT TWENTY");
+    assert_eq!(act_title(21), "ACT 21");
+    assert_eq!(end_of("ACT TWO"), "END OF ACT TWO");
+    assert_eq!(end_of("teaser"), "END OF TEASER");
+    assert_eq!(end_of(""), "END OF ACT");
+}
+
+#[test]
+fn an_act_round_trips_through_the_file_as_a_level_one_heading() {
+    let a = two_acts();
+    let md = storage::to_markdown(&a);
+    assert!(md.contains("\n# ACT ONE\n\n## INT. DINER - DAY\n"), "{md}");
+    assert!(md.contains("\n# ACT TWO\n"));
+    let b = storage::from_markdown(&md);
+    let kinds = |d: &Document| d.blocks.iter().map(|b| (b.element, b.text.clone())).collect::<Vec<_>>();
+    assert_eq!(kinds(&a), kinds(&b));
+    // an act not yet named is still an act
+    let mut c = two_acts();
+    c.blocks[0].text.clear();
+    let back = storage::from_markdown(&storage::to_markdown(&c));
+    assert_eq!(back.blocks[0].element, Element::Act);
+    assert_eq!(back.blocks[0].text, "");
+}
+
+#[test]
+fn scenes_end_where_an_act_begins_and_acts_span_their_scenes() {
+    let d = two_acts();
+    let scenes = d.scenes();
+    assert_eq!(scenes.len(), 4);
+    // the lot scene stops before ACT TWO
+    assert_eq!(scenes[1].end, 6);
+    assert_eq!(d.blocks[scenes[1].end].element, Element::Act);
+    let acts = d.acts();
+    assert_eq!(acts.len(), 2);
+    assert_eq!((acts[0].number, acts[0].title.as_str(), acts[0].start, acts[0].end), (1, "ACT ONE", 0, 6));
+    assert_eq!((acts[1].start, acts[1].end), (6, d.blocks.len()));
+    // the act itself is in no scene; what follows its heading is
+    assert_eq!(d.scene_of(d.blocks[6].id), None);
+    assert_eq!(d.scene_of(d.blocks[8].id), Some(2));
+    assert_eq!(d.act_of(d.blocks[8].id), Some(1));
+    assert_eq!(d.act_of(d.blocks[0].id), Some(0));
+    // and a script without acts has none
+    assert!(sample().acts().is_empty());
+    assert_eq!(sample().scenes().len(), 1);
+}
+
+#[test]
+fn every_act_starts_a_page_centred_and_ends_with_its_end_of_line() {
+    let d = two_acts();
+    let lines = export::compose(&d);
+    let act_lines: Vec<&export::Line> = lines.iter().filter(|l| l.element == Some(Element::Act)).collect();
+    let texts: Vec<&str> = act_lines.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, ["ACT ONE", "END OF ACT ONE", "ACT TWO", "END OF ACT TWO"]);
+    for l in &act_lines {
+        assert_eq!(l.indent, (60 - l.text.len()) / 2, "{} is centred", l.text);
+    }
+    assert!(act_lines[1].is_act_end() && act_lines[1].block.is_none());
+    assert!(act_lines[0].is_act_title());
+
+    let pages = export::paginate(&lines);
+    let first = |pg: &Vec<export::Line>| pg.iter().find(|l| !l.text.trim().is_empty()).map(|l| l.text.clone());
+    assert_eq!(first(&pages[0]).as_deref(), Some("ACT ONE"));
+    let two = pages.iter().position(|pg| first(pg).as_deref() == Some("ACT TWO")).expect("ACT TWO opens a page");
+    assert_eq!(two, 1, "act one fits on one page, so act two is page 2");
+    // act one's close is on its own last page, not the next act's
+    assert!(pages[0].iter().any(|l| l.text == "END OF ACT ONE"));
+    assert!(pages.len() >= 3, "act two runs over");
+    // the page map still points at real blocks
+    let starts = export::page_starts(&d);
+    assert_eq!(starts[0], (2, d.blocks[6].id));
+    assert_eq!(export::page_of_block(&d, d.blocks[6].id), Some(2));
+}
+
+#[test]
+fn an_end_of_line_is_never_alone_at_the_top_of_a_page() {
+    // fill act one so its last line lands exactly at the foot of page one
+    for fill in 40..60 {
+        let mut d = Document::default();
+        d.blocks.clear();
+        d.push(Element::Act, "ACT ONE");
+        d.push(Element::SceneHeading, "INT. HALL - DAY");
+        for k in 0..fill {
+            d.push(Element::Character, "MARIA");
+            d.push(Element::Dialogue, &format!("Line {k}."));
+        }
+        d.reseed_ids();
+        for pg in export::paginate(&export::compose(&d)) {
+            let first = pg.iter().find(|l| !l.text.trim().is_empty()).unwrap();
+            assert!(!first.is_act_end(), "END OF opened a page with {fill} speeches");
+            assert!(pg.len() <= crate::model::LINES_PER_PAGE + 4);
+        }
+    }
+}
+
+#[test]
+fn acts_survive_fountain_and_final_draft_without_doubling_their_close() {
+    let d = two_acts();
+    let f = export::to_fountain(&d);
+    assert!(f.contains("# ACT ONE\n\n>ACT ONE<"), "{f}");
+    assert!(f.contains(">END OF ACT ONE<\n\n===\n\n# ACT TWO"), "{f}");
+    assert!(f.trim_end().ends_with(">END OF ACT TWO<"));
+    let back = crate::fountain::parse(&f);
+    let acts: Vec<String> = back.blocks.iter().filter(|b| b.element == Element::Act).map(|b| b.text.clone()).collect();
+    assert_eq!(acts, ["ACT ONE", "ACT TWO"]);
+    assert!(!back.blocks.iter().any(|b| b.text.contains("END OF")), "the close is not kept twice");
+    assert_eq!(back.scenes().len(), 4);
+
+    let x = export::to_fdx(&d);
+    assert!(x.contains("<Paragraph Type=\"New Act\">\n      <Text>ACT ONE</Text>"));
+    assert!(x.contains("<Paragraph Type=\"End of Act\">\n      <Text>END OF ACT TWO</Text>"));
+    let back = crate::fountain::parse_fdx(&x);
+    let acts: Vec<String> = back.blocks.iter().filter(|b| b.element == Element::Act).map(|b| b.text.clone()).collect();
+    assert_eq!(acts, ["ACT ONE", "ACT TWO"]);
+    assert!(!back.blocks.iter().any(|b| b.text.contains("END OF")));
+
+    // other apps' ways of marking acts
+    let other = "Title: X\n\n# Teaser\n\nEXT. SEA - DAY\n\nWaves.\n\n>END OF TEASER<\n\n===\n\n>**_ACT ONE_**<\n\nINT. SHIP - DAY\n\nCreaks.\n\n## A sequence\n\n>THE END<\n";
+    let back = crate::fountain::parse(other);
+    let kinds: Vec<(Element, &str)> = back.blocks.iter().map(|b| (b.element, b.text.as_str())).collect();
+    assert_eq!(
+        kinds,
+        [
+            (Element::Act, "TEASER"),
+            (Element::SceneHeading, "EXT. SEA - DAY"),
+            (Element::Action, "Waves."),
+            (Element::Act, "ACT ONE"),
+            (Element::SceneHeading, "INT. SHIP - DAY"),
+            (Element::Action, "Creaks."),
+            (Element::Action, "THE END"),
+        ]
+    );
+}
+
+#[test]
+fn a_pdf_with_acts_is_written() {
+    let bytes = export::pdf_bytes(&two_acts(), &export::PdfOptions::default()).unwrap();
+    assert_eq!(&bytes[..5], b"%PDF-");
+    let txt = export::to_plain_text(&two_acts());
+    assert!(txt.contains(&format!("{}ACT ONE\n", " ".repeat(26))));
+    assert!(txt.contains("END OF ACT TWO"));
+}
+
+// ----------------------------------------------------- chosen colours --
+
+#[test]
+fn chosen_colours_ride_in_the_front_matter_and_only_when_there_are_some() {
+    let mut d = sample();
+    d.meta.set_voice("MARIA", Some(212));
+    d.meta.set_voice("COLE", Some(384));
+    let md = storage::to_markdown(&d);
+    assert!(md.contains("\nvoices: MARIA=212; COLE=24\n---\n"), "{md}");
+    let back = storage::from_markdown(&md);
+    assert_eq!(back.meta.voices, vec![("MARIA".to_string(), 212), ("COLE".to_string(), 24)]);
+    assert_eq!(back.meta.voice("COLE"), Some(24));
+    // handing one back to chance
+    let mut e = back.clone();
+    e.meta.set_voice("MARIA", None);
+    assert_eq!(e.meta.voices, vec![("COLE".to_string(), 24)]);
+    // no colours, no line: the file is exactly as it was
+    assert!(!storage::to_markdown(&sample()).contains("voices"));
+    // anything odd in the line is skipped, not fatal
+    let odd = "---\ntitle: X\nvoices: MARIA=; =40; BOB=12; bob=99; SAL=x\n---\n\n## INT. A - DAY\n";
+    assert_eq!(storage::from_markdown(odd).meta.voices, vec![("BOB".to_string(), 12)]);
+}
+
+#[test]
+fn custom_colours_keep_the_chosen_hue_and_deal_the_rest_as_random_does() {
+    use crate::theme;
+    let names: Vec<String> = ["MARIA", "COLE", "JUNE"].iter().map(|s| s.to_string()).collect();
+    for dark in [true, false] {
+        theme::set_palette(theme::ThemeId::Bloodmoon, dark);
+        let random = theme::character_colors(&names, 3);
+        // nothing chosen is Random, exactly
+        assert_eq!(theme::voice_colors(&names, 3, &[]), random);
+        let chosen = vec![("COLE".to_string(), 120u16), ("NOBODY".to_string(), 10)];
+        let custom = theme::voice_colors(&names, 3, &chosen);
+        assert_eq!(custom["COLE"], theme::voice_of_hue(120));
+        assert_eq!(custom["MARIA"], random["MARIA"], "the others are dealt as before");
+        assert_eq!(custom["JUNE"], random["JUNE"]);
+        assert!(!custom.contains_key("NOBODY"), "a colour for someone who never speaks is ignored");
+        // on paper: the same hue, as ink
+        let inks = theme::voice_inks(&names, 3, &chosen);
+        assert_eq!(theme::voice_inks(&names, 3, &[]), theme::character_inks(&names, 3));
+        let [r, g, b] = inks["COLE"];
+        assert!(g > r && g > b, "120 is green on paper too: {:?}", inks["COLE"]);
+        assert!((r as u32 + g as u32 + b as u32) < 3 * 160, "deep enough to read as ink");
+    }
+}
+
+#[test]
+fn the_colour_mode_is_remembered_and_written_only_once_chosen() {
+    use crate::settings::Settings;
+    let plain = Settings::default().serialize();
+    assert!(!plain.contains("character_colors_mode"), "a file that never chose stays as it was");
+    let s = Settings {
+        custom_colors: true,
+        ..Default::default()
+    };
+    let text = s.serialize();
+    assert!(text.contains("character_colors_mode = custom"));
+    assert!(Settings::parse(&text).custom_colors);
+    assert!(!Settings::parse(&plain).custom_colors);
+}
+
+// ------------------------------------------------------------- shortcuts --
+
+#[test]
+fn every_default_shortcut_reads_back_and_the_specific_chord_is_heard_first() {
+    use crate::keys::{self, Command, Keymap};
+    use eframe::egui::{Key, KeyboardShortcut, Modifiers};
+    for web in [false, true] {
+        for cmd in Command::ALL {
+            assert_eq!(Command::from_slug(&cmd.slug()), Some(cmd));
+            for k in cmd.defaults(web) {
+                assert_eq!(keys::parse(&keys::text(&k)), Some(k), "{}", keys::text(&k));
+            }
+        }
+        // a chord with Shift or Alt is asked for before the plainer one with
+        // the same key, as the hand-written order always had it
+        let order = Keymap::default().listen(&Command::ALL, web);
+        for (i, (_, a)) in order.iter().enumerate() {
+            for (_, b) in &order[i + 1..] {
+                let more = |x: &KeyboardShortcut| x.modifiers.shift as u8 + x.modifiers.alt as u8;
+                if a.logical_key == b.logical_key {
+                    assert!(more(a) >= more(b), "{} before {}", keys::text(a), keys::text(b));
+                }
+            }
+        }
+    }
+    assert_eq!(keys::text(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Comma)), "Ctrl+,");
+    assert_eq!(keys::parse("Ctrl++"), Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::Plus)));
+    assert_eq!(keys::parse("ctrl+shift+enter"), Some(KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter)));
+    assert_eq!(keys::parse("Hyper+Q"), None);
+    assert_eq!(Keymap::default().label(Command::NewScript, true), "Ctrl+Alt+N");
+    assert_eq!(Keymap::default().label(Command::Element(3), true), "Alt+3");
+    assert_eq!(Keymap::default().label(Command::Element(3), false), "Ctrl+3");
+}
+
+#[test]
+fn a_chosen_shortcut_is_kept_only_while_it_differs_from_the_default() {
+    use crate::keys::{self, Command, Keymap};
+    use crate::settings::Settings;
+    use eframe::egui::{Key, KeyboardShortcut, Modifiers};
+    let alt_d = KeyboardShortcut::new(Modifiers::COMMAND | Modifiers::ALT, Key::D);
+    let mut s = Settings::default();
+    assert!(!s.serialize().contains("key."), "nothing chosen, nothing written");
+    s.keys.set(Command::ToggleDetails, alt_d, true);
+    assert_eq!(s.keys.chords(Command::ToggleDetails, true), vec![alt_d]);
+    let text = s.serialize();
+    assert!(text.contains("key.details = Ctrl+Alt+D\n"), "{text}");
+    let back = Settings::parse(&text);
+    assert_eq!(back.keys, s.keys);
+    // choosing the default again is the default
+    s.keys.set(Command::ToggleDetails, KeyboardShortcut::new(Modifiers::COMMAND, Key::I), true);
+    assert!(s.keys.is_default());
+    // who already has a chord
+    let km = Keymap::default();
+    let ctrl_s = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
+    assert_eq!(km.taken_by(&ctrl_s, Command::Undo, &Command::ALL, false), Some(Command::Save));
+    assert_eq!(km.taken_by(&ctrl_s, Command::Save, &Command::ALL, false), None);
+    // what cannot be a shortcut
+    let refuse = |m: Modifiers, k: Key, web: bool| keys::refused(&KeyboardShortcut::new(m, k), web);
+    assert!(refuse(Modifiers::NONE, Key::Q, false).is_some(), "a plain key is for typing");
+    assert!(refuse(Modifiers::SHIFT, Key::Enter, false).is_some());
+    assert!(refuse(Modifiers::NONE, Key::F2, false).is_none(), "function keys are fine bare");
+    assert!(refuse(Modifiers::COMMAND, Key::W, true).is_some(), "a browser keeps Ctrl+W");
+    assert!(refuse(Modifiers::COMMAND, Key::Num4, true).is_some());
+    assert!(refuse(Modifiers::ALT, Key::Num4, true).is_none());
+    assert!(refuse(Modifiers::COMMAND, Key::V, false).is_some());
+    assert!(refuse(Modifiers::ALT, Key::ArrowUp, false).is_some());
+    assert!(refuse(Modifiers::COMMAND | Modifiers::ALT, Key::D, true).is_none());
 }

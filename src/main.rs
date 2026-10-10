@@ -1,4 +1,4 @@
-//! Northstar — a screenwriting studio for Linux.
+//! Northstar on the desktop — a screenwriting studio for Linux.
 //!
 //! Scripts are plain markdown on disk; the editor formats them to standard
 //! master-scene screenplay geometry and exports print-ready PDF. Drawn in the
@@ -6,30 +6,7 @@
 //!
 //! MarkedExiled Software.
 
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod uitests;
-
-mod alerts;
-mod anim;
-mod app;
-mod blur;
-mod cards;
-mod caret;
-mod chrome;
-mod editor;
-mod export;
-mod fountain;
-mod icons;
-mod logo;
-mod model;
-mod pages;
-mod settings;
-mod splash;
-mod storage;
-mod theme;
-mod ui;
+use northstar::{app, logo, splash, storage, theme};
 
 fn main() -> eframe::Result<()> {
     // `northstar --emit-icon <path>` writes the mark as an SVG. install.sh uses

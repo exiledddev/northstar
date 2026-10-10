@@ -15,9 +15,10 @@ use crate::theme::{self, pal};
 /// Height of the title bar strip.
 pub const TITLE_H: f32 = 32.0;
 
-/// Is the window maximised right now?
+/// Is the window maximised right now? A browser tab always is: it fills the
+/// page edge to edge, with square corners, and the browser is the frame.
 pub fn maximized(ctx: &egui::Context) -> bool {
-    ctx.input(|i| i.viewport().maximized.unwrap_or(false))
+    crate::WEB || ctx.input(|i| i.viewport().maximized.unwrap_or(false))
 }
 
 /// The one glass sheet the whole window sits on, with the window's own
@@ -29,6 +30,10 @@ pub fn backdrop(ctx: &egui::Context, fill: egui::Color32) {
     let r = if maximized(ctx) { 0.0 } else { theme::R_WINDOW };
     let painter = ctx.layer_painter(egui::LayerId::background());
     painter.rect_filled(rect, egui::Rounding::same(r), fill);
+    if crate::WEB {
+        // a browser tab's edge is the browser's
+        return;
+    }
     // the single hairline in the app: the edge of the window itself
     painter.rect_stroke(
         rect.shrink(0.5),
@@ -37,18 +42,23 @@ pub fn backdrop(ctx: &egui::Context, fill: egui::Color32) {
     );
 }
 
-/// The title bar. Returns nothing: every button acts on the viewport directly.
-pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context) {
+/// The title bar. The window buttons act on the viewport directly; `extra` is
+/// drawn at the right-hand end, laid out right to left — where a team library
+/// puts the way home and who you are signed in as. In a browser there are no
+/// window buttons: the tab has its own.
+pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, extra: impl FnOnce(&mut egui::Ui)) {
     let p = pal();
     let full = Rect::from_min_size(ui.cursor().min, Vec2::new(ui.available_width(), TITLE_H));
 
     // anywhere not covered by a control drags the window
-    let drag = ui.interact(full, ui.id().with("ns-titlebar"), Sense::click_and_drag());
-    if drag.drag_started_by(egui::PointerButton::Primary) {
-        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-    }
-    if drag.double_clicked() {
-        ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized(ctx)));
+    if !crate::WEB {
+        let drag = ui.interact(full, ui.id().with("ns-titlebar"), Sense::click_and_drag());
+        if drag.drag_started_by(egui::PointerButton::Primary) {
+            ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+        }
+        if drag.double_clicked() {
+            ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized(ctx)));
+        }
     }
 
     let mut row = ui.new_child(
@@ -60,7 +70,8 @@ pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context) {
     row.add_space(2.0);
 
     let (mark, _) = row.allocate_exact_size(Vec2::splat(17.0), Sense::hover());
-    logo::paint(row.painter(), mark, 0.22 * anim::breathe(ctx, 6.0));
+    // no glow on the mark here: it has nothing to light
+    logo::paint(row.painter(), mark, 0.0);
     let painter = row.painter().clone();
     let (name, _) = row.allocate_exact_size(Vec2::new(96.0, TITLE_H), Sense::hover());
     theme::tracked_text(
@@ -74,16 +85,19 @@ pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context) {
 
     row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        if window_button(ui, Glyph::Close, p.danger) {
-            ctx.send_viewport_cmd(ViewportCommand::Close);
+        if !crate::WEB {
+            if window_button(ui, Glyph::Close, p.danger) {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+            let max = maximized(ctx);
+            if window_button(ui, if max { Glyph::Restore } else { Glyph::Max }, p.primary) {
+                ctx.send_viewport_cmd(ViewportCommand::Maximized(!max));
+            }
+            if window_button(ui, Glyph::Min, p.primary) {
+                ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            }
         }
-        let max = maximized(ctx);
-        if window_button(ui, if max { Glyph::Restore } else { Glyph::Max }, p.primary) {
-            ctx.send_viewport_cmd(ViewportCommand::Maximized(!max));
-        }
-        if window_button(ui, Glyph::Min, p.primary) {
-            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
-        }
+        extra(ui);
     });
 
     ui.advance_cursor_after_rect(full);
@@ -100,9 +114,8 @@ enum Glyph {
 fn window_button(ui: &mut egui::Ui, glyph: Glyph, tint: egui::Color32) -> bool {
     let p = pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(30.0, 24.0), Sense::click());
-    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), 0.14);
+    let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     if hot > 0.01 {
-        theme::glow_rect(ui.painter(), rect.shrink2(Vec2::new(4.0, 3.0)), 6.0, tint, 9.0, hot * 0.55);
         ui.painter().rect_filled(
             rect.shrink2(Vec2::new(4.0, 3.0)),
             egui::Rounding::same(6.0),

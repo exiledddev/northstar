@@ -695,3 +695,224 @@ fn every_colour_option_paints_every_view() {
     let aside = h.app.debug_aside_rect();
     assert!(aside.bottom() <= 580.0 - 14.0 + 1.0, "{aside:?}");
 }
+
+#[test]
+fn no_island_on_the_right_ever_runs_past_the_page() {
+    // one speaker, as in a narrated script — the case that used to overflow
+    let mut one = Document::default();
+    one.blocks.clear();
+    one.meta.title = "Narrated".into();
+    for i in 0..30 {
+        one.push(Element::SceneHeading, &format!("INT. ROOM {i} - DAY"));
+        one.push(Element::Character, "NARRATOR");
+        one.push(Element::Dialogue, "And so it went.");
+    }
+    one.reseed_ids();
+    for (w, h) in [(880.0, 580.0), (1100.0, 700.0), (1320.0, 900.0)] {
+        for (details, scenes, cast) in [
+            (false, false, true),
+            (false, true, false),
+            (true, false, false),
+            (false, true, true),
+            (true, true, true),
+            (true, false, true),
+        ] {
+            let yes = |b: bool| if b { "yes" } else { "no" };
+            let mut hh = Harness::with(
+                w,
+                h,
+                &format!(
+                    "show_details = {}\nshow_scenes = {}\nshow_cast = {}\n",
+                    yes(details),
+                    yes(scenes),
+                    yes(cast)
+                ),
+            );
+            hh.load(one.clone());
+            hh.frames(3);
+            let page = hh.app.debug_page_rect();
+            let islands = hh.app.debug_aside_islands();
+            assert!(!islands.is_empty());
+            for r in islands {
+                assert!(
+                    r.bottom() <= page.bottom() + 0.5,
+                    "{w}x{h} details={details} scenes={scenes} cast={cast}: island ends at {} but the page at {}",
+                    r.bottom(),
+                    page.bottom()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn reading_mode_shows_one_page_at_a_time_and_turns() {
+    let mut h = Harness::new();
+    let mut d = three_scenes();
+    for _ in 0..160 {
+        d.push(Element::Action, "Line after line after line of action on the page.");
+    }
+    d.push(Element::Action, "THE LAST LINE.");
+    d.reseed_ids();
+    h.load(d);
+    let body = crate::export::page_count(h.app.doc());
+    assert!(body >= 3);
+    // written near the end: Reading mode opens on that page, not the title
+    let last = h.app.doc().blocks.last().unwrap().id;
+    h.focus(last);
+    h.app.set_mode(Mode::Read);
+    h.frames(3);
+    assert_eq!(h.app.debug_sheet_count(), 1 + body);
+    assert_eq!(h.app.debug_sheet_on_show(), body, "opens where the writing was");
+    // the whole page is in view, with room for the control under it
+    let sheet = h.app.debug_sheet_rect();
+    let page = h.app.debug_page_rect();
+    assert!(page.contains_rect(sheet), "{sheet:?} inside {page:?}");
+    assert!((sheet.height() / sheet.width() - 11.0 / 8.5).abs() < 0.01, "US letter");
+    h.press(Key::Home, Modifiers::NONE);
+    assert_eq!(h.app.debug_sheet_on_show(), 0, "Home is the title page");
+    h.press(Key::ArrowRight, Modifiers::NONE);
+    h.press(Key::PageDown, Modifiers::NONE);
+    assert_eq!(h.app.debug_sheet_on_show(), 2);
+    h.press(Key::ArrowLeft, Modifiers::NONE);
+    assert_eq!(h.app.debug_sheet_on_show(), 1);
+    h.press(Key::End, Modifiers::NONE);
+    assert_eq!(h.app.debug_sheet_on_show(), body);
+    h.press(Key::ArrowRight, Modifiers::NONE);
+    assert_eq!(h.app.debug_sheet_on_show(), body, "no page past the last");
+    // the wheel turns pages too
+    h.press(Key::Home, Modifiers::NONE);
+    let at = page.center();
+    for _ in 0..3 {
+        h.frame_with(vec![
+            Event::PointerMoved(at),
+            Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: vec2(0.0, -40.0),
+                modifiers: Modifiers::NONE,
+            },
+        ]);
+    }
+    h.frames(2);
+    assert_eq!(h.app.debug_sheet_on_show(), 1);
+}
+
+#[test]
+fn settings_is_a_window_that_closes_by_esc_button_or_outside() {
+    let mut h = Harness::new();
+    let button = h.app.debug_settings_button();
+    h.click(button.center());
+    assert!(h.app.debug_settings_open());
+    h.press(Key::Escape, Modifiers::NONE);
+    assert!(!h.app.debug_settings_open(), "Esc closes it");
+    h.click(button.center());
+    assert!(h.app.debug_settings_open());
+    // a click on the dimmed app outside the window closes it
+    h.click(pos2(20.0, 880.0));
+    assert!(!h.app.debug_settings_open(), "a click outside closes it");
+    // categories: the second row is The page
+    h.click(button.center());
+    let win_left = (1320.0 - 780.0) / 2.0;
+    h.click(pos2(win_left + 60.0, (900.0 - 620.0) / 2.0 + 56.0 + 17.0 + 36.0));
+    assert!(h.app.debug_settings_open(), "a click inside keeps it open");
+    assert_eq!(h.app.debug_settings_tab(), 1);
+}
+
+#[test]
+fn the_export_window_exports_the_pages_asked_for() {
+    use crate::app::PageChoice;
+    let mut h = Harness::with(1320.0, 900.0, "after_export = nothing\n");
+    let mut d = three_scenes();
+    for _ in 0..140 {
+        d.push(Element::Action, "Line after line after line of action on the page.");
+    }
+    d.reseed_ids();
+    h.load(d);
+    let id = h.app.doc().blocks[1].id;
+    h.focus(id);
+    h.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(h.app.debug_export_open());
+    assert_eq!(h.app.focus_block(), Some(id));
+    // Enter answers the window, not the script behind it
+    let blocks = h.app.doc().blocks.len();
+    h.app.debug_export_choose(PageChoice::Chosen, "2-3");
+    h.frames(2);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(h.app.doc().blocks.len(), blocks, "no line was split behind the window");
+    assert!(!h.app.debug_export_open(), "exporting closes it");
+    let out = storage::exports_dir().join("three-scenes-pages-2-3.pdf");
+    assert!(out.exists(), "{out:?}");
+
+    // a selection that will not do keeps the window open and exports nothing
+    h.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    h.app.debug_export_choose(PageChoice::Chosen, "40-2");
+    h.frames(2);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert!(h.app.debug_export_open());
+    h.press(Key::Escape, Modifiers::NONE);
+    assert!(!h.app.debug_export_open());
+
+    // this page: the one the caret is on
+    h.press(Key::E, Modifiers::COMMAND | Modifiers::SHIFT);
+    h.app.debug_export_choose(PageChoice::This, "");
+    h.frames(2);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert!(storage::exports_dir().join("three-scenes-pages-1.pdf").exists());
+    // and the choices on the page are remembered
+    assert!(storage::read_settings().pdf_title_page);
+}
+
+#[test]
+fn the_desktop_makes_no_acts_and_ctrl_shift_enter_is_still_a_new_scene() {
+    let mut h = Harness::new();
+    h.load(three_scenes());
+    let in_first = h.app.doc().blocks[2].id;
+    h.focus(in_first);
+    h.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert!(h.app.doc().acts().is_empty(), "acts are made on a team library only, for now");
+    assert_eq!(h.app.doc().scenes().len(), 4, "the chord does what it always did");
+}
+
+#[test]
+fn a_script_with_acts_shows_them_everywhere_on_the_desktop_too() {
+    let mut h = Harness::new();
+    let mut d = three_scenes();
+    let act = d.new_block(Element::Act, "ACT ONE");
+    d.blocks.insert(0, act);
+    let act = d.new_block(Element::Act, "");
+    d.blocks.insert(4, act);
+    h.load(d);
+    for mode in [Mode::Write, Mode::Cards, Mode::Read] {
+        h.app.set_mode(mode);
+        h.frames(3);
+    }
+    h.app.settings_mut().show_scenes = true;
+    h.app.set_mode(Mode::Write);
+    h.frames(3);
+    // Enter in an act's title starts its first scene; Tab leaves it an act
+    let first = h.app.doc().blocks[0].id;
+    h.focus(first);
+    h.press(Key::Tab, Modifiers::NONE);
+    assert_eq!(h.app.doc().blocks[0].element, Element::Act);
+    h.press(Key::Enter, Modifiers::NONE);
+    assert_eq!(h.app.doc().blocks[0].text, "ACT ONE", "the title is never split");
+    assert_eq!(h.app.doc().blocks[1].element, Element::SceneHeading);
+    assert_eq!(h.app.doc().blocks[1].text, "");
+}
+
+#[test]
+fn the_desktop_offers_no_colour_picker() {
+    let mut h = Harness::with(1320.0, 900.0, "character_colors = yes\nshow_cast = yes\n");
+    let mut d = three_scenes();
+    d.meta.set_voice("DETECTIVE COLE", Some(200));
+    h.load(d);
+    h.app.debug_open_voice_picker("DETECTIVE COLE");
+    h.frames(2);
+    assert!(!h.app.debug_voice_picker_open(), "choosing colours is the team edition's, for now");
+    // a colour chosen on the web only shows once Custom is on
+    let voices = h.app.debug_voices().unwrap();
+    assert_eq!(voices["DETECTIVE COLE"], crate::theme::character_colors(&["DETECTIVE COLE".to_string()], 0)["DETECTIVE COLE"]);
+    h.app.debug_open_settings(2);
+    h.frames(3);
+    assert!(!h.app.settings().custom_colors);
+}

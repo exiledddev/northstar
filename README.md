@@ -20,6 +20,8 @@ Tesseract is wearing, live.
 
 ![Northstar in the JetBrains theme, with character colours and every panel open](docs/northstar-jetbrains.png)
 
+![Reading mode: one page at a time](docs/northstar-reading.png)
+
 ---
 
 ## Installing
@@ -58,6 +60,9 @@ line to add.
 **Upgrading** from the first Northstar: `git pull` (or re-clone) and run
 `./install.sh` again. It replaces `~/.local/bin/northstar` in place. Your
 scripts are untouched and open exactly as before — the file format only grew.
+Before every install it also copies your whole library (scripts, snapshots,
+settings) to `~/.local/share/northstar-backup-<date>`. It only copies: nothing
+in your library is moved or changed. Delete old copies whenever you like.
 
 **Uninstalling:** `./install.sh --uninstall`. Your scripts stay in
 `~/.local/share/northstar`.
@@ -100,8 +105,8 @@ heading carries a four-pointed star in the gutter that lights while you are in
 its scene. A faint rule marks where each printed page will begin, numbered the
 way the PDF numbers it.
 
-Each element is signalled by a faint band under its words and a thin tick at
-its left edge, in its own colour — scene headings in the theme's warm energy
+Each element is signalled by a whisper of a band under its words and a thin
+tick at its left edge, in its own colour — scene headings in the theme's warm energy
 colour, cues in its accent, dialogue, parentheticals, transitions and shots in
 four more of its hues, and action left neutral. Settings → **Element colours**
 turns it off. None of it ever reaches Reading mode or the page.
@@ -118,9 +123,11 @@ you write straight onto the card. Drag a card by its head to move the whole
 scene; right-click for a card colour or to delete the scene (it asks first,
 and `Ctrl+Z` brings it back).
 
-**Read** — Reading mode: the script exactly as it will print, typeset, title
-page first, drawn from the same layout pass the PDF is written from — no
-bands, tags or stars. Two pages side by side when there is room. Click any
+**Read** — Reading mode: the script exactly as it will print, one page at a
+time, typeset, drawn from the same layout pass the PDF is written from — no
+bands, tags or stars. The page is sized so all of it is in view, and opens on
+the page you were writing. Turn it with `←` `→`, `Page Up` `Page Down`,
+`Home` `End`, the scroll wheel, or the control under the page. Click any
 line to go and write it.
 
 On the right, **Details** (`Ctrl+I`, or the ⓘ in the ribbon) is the script's
@@ -154,6 +161,7 @@ and the type decides the indent, the width, and whether it is forced to caps.
 | `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` | Undo / redo, document-wide |
 | `Ctrl+N` | New script — its title is selected, ready to type over |
 | `Ctrl+E` | Quick Export: PDF, then open it (or show it, or nothing — Settings) |
+| `Ctrl+Shift+E` | Export PDF…: choose pages, title page, scene numbers, character colours |
 | `Ctrl+F` / `Ctrl+H` | Find and replace in the script |
 | `Ctrl+Shift+F` | Filter the library |
 | `Ctrl+G` | Write → Cards → Read |
@@ -255,9 +263,25 @@ in the library on its own. Anything unrecognised becomes action rather than
 being dropped.
 
 **Export** (the `⋯` menu) gives you PDF (title page, page numbers, proper
-Courier geometry, and scene numbers in both margins if you turn them on),
-**Final Draft** `.fdx`, **Fountain** (for Highland, Beat, afterwriting…), or
-plain text.
+Courier geometry), **Final Draft** `.fdx`, **Fountain** (for Highland, Beat,
+afterwriting…), or plain text.
+
+**Export PDF…** (`⋯` menu, `Ctrl+Shift+E`, or *Export…* in Reading mode) opens
+a window for the PDF:
+
+- **Pages** — all of them, the page you are on, or exactly the ones you name,
+  the way a print dialog takes them: `1-3, 7, 10-`. Chosen pages keep the
+  numbers they have in the whole script, as revised pages do, and the file is
+  named for them (`my-script-pages-1-3_7.pdf`) so it never overwrites the full
+  PDF.
+- **Title page**, **scene numbers** in both margins, and **character colours**
+  — every speaker's cue and lines printed in their own colour. These are the
+  app's character colours, the same hue for each speaker, deepened so they
+  read as ink on white paper whatever theme the app is in; a strip in the
+  window shows them as they will print.
+
+The choices are remembered, and Quick Export (`Ctrl+E`) uses them for the
+whole script.
 
 **Import** — the arrow beside *New script*, the `⋯` menu, dropping a file onto
 the window, or `northstar some-file.fountain` — reads Fountain, Final Draft
@@ -271,6 +295,11 @@ too, so nothing is ever lost.
 ---
 
 ## Settings
+
+Settings (`Ctrl+,`, or the sliders in the ribbon) open as a window of their
+own over the app, in seven categories — Appearance, The page, Colour, Panels,
+Writing & saving, YouTrack, About. `Esc`, the close button or a click outside
+puts it away.
 
 Theme (six, each light or dark: Zen, Ember, Frostbite, Bloodmoon and Void —
 the same five as Tesseract — plus **JetBrains**, orange into magenta into
@@ -286,6 +315,17 @@ With **Match Tesseract** on, theme, light/dark, glass, blur and motion are read
 from `~/.local/share/tesseract/settings.conf` and followed as Tesseract changes
 them. Choosing a look by hand in Northstar turns matching off. Without
 Tesseract installed, Northstar starts in Bloodmoon, its own red.
+
+---
+
+## Light, used sparingly
+
+Glow is kept for things that are lit for a reason: the scene you are in, the
+place a dragged card will land, a hovered card lifting off the page, and the
+one focal point of the splash. Primary actions are told apart by contrast and
+colour, never by glow. Anything that floats — cards, the find bar, alerts, the
+Settings window — sits on a layered soft shadow instead of a halo, and hovers
+ease in over about a quarter of a second.
 
 ---
 
@@ -309,10 +349,48 @@ and goes.
 
 ---
 
+## For a team: Northstar Web
+
+The same app runs in a browser for a whole team, on one shared library, with
+Discord sign-in, a script picker, who-edited-what history and one editor per
+script. That lives in its own repository,
+[northstarWeb](https://github.com/exiledddev/northstarWeb), which builds this
+code for the browser.
+
+The desktop app is not changed by it. It never talks to a server, and your
+library folder stays exactly as it is. To move scripts to the team, import
+them in the browser: that uploads copies.
+
+Three things are made only in the browser, for now:
+
+- **Acts.** *New act* (or Ctrl+Shift+Enter) starts an act at the scene you
+  are in. In the script it is a wide divider with its own constellation; in
+  print every act starts a new page with its title centred, bold and
+  underlined, and closes with a centred `END OF ACT ONE`. In the file it is a
+  level-one heading, `# ACT ONE`. Fountain and Final Draft carry acts both
+  ways.
+- **Chosen character colours.** Character colours can be *Random* (dealt from
+  the wheel, as before) or *Custom*: click a character's colour in the Cast
+  panel or in Settings → Colour and choose one, and they keep it everywhere,
+  on paper too. The choice is kept in the script's front matter
+  (`voices: MARIA=212; COLE=24`), so the whole team sees it.
+- **Your own shortcuts.** Settings → Keyboard lists every shortcut. Click
+  one and press the keys you want instead; *Reset all to default* puts back
+  the ones above. They are kept with your own settings, so each person has
+  their own, and only the shortcuts you changed are written down.
+
+The desktop app shows both in any script that has them, so a script from the
+team opens properly anywhere. It doesn't offer to make them yet. Scripts
+without acts or chosen colours are written exactly as before.
+
+---
+
 ## Development
 
 ```bash
-cargo test          # 60 tests: behaviour, files, formats, and headless UI
+cargo test          # 100 tests: behaviour, files, formats, headless UI, team screens
+cargo build --lib --target wasm32-unknown-unknown   # the library builds for the browser too
+cargo run --example team_demo                       # the team screens, no server needed
 cargo build --release
 ./target/release/northstar --emit-icon icon.svg   # the mark, as the app draws it
 ```
@@ -324,6 +402,8 @@ Tesseract theme-following are all exercised for real.
 
 | File | Contents |
 |---|---|
+| `src/lib.rs` / `src/main.rs` | The app is a library; the desktop binary runs it on a window |
+| `src/backend.rs` | The `Store` trait the app reads and writes through; `LocalBackend` is the library folder |
 | `src/model.rs` | Elements, indents, blocks, scenes, cast, word wrap, paste guessing, SmartType |
 | `src/storage.rs` | The library folder, markdown read/write, snapshots, settings, import |
 | `src/export.rs` | Line composition, pagination, page map, scene lengths, PDF/FDX/Fountain/text |
@@ -331,6 +411,9 @@ Tesseract theme-following are all exercised for real.
 | `src/editor.rs` | The page: block rendering and every structural keystroke |
 | `src/cards.rs` / `src/pages.rs` | Cards, and Reading mode |
 | `src/app.rs` | Shell — ribbon, library, navigator, popovers, autosave, undo |
+| `src/app/home.rs` `src/app/team.rs` `src/people.rs` | The team edition's screens: Home, read-only scripts, History, the Team tab, avatars. Shown only for a team library |
+| `src/app/voices.rs` | Choosing character colours: Random or Custom, the colour picker. Team library only |
+| `src/keys.rs` `src/app/keyboard.rs` | Every shortcut and its default chords, the ones you choose instead, and Settings → Keyboard (team library only) |
 | `src/theme.rs` `anim.rs` `ui.rs` `icons.rs` `alerts.rs` `chrome.rs` `blur.rs` `splash.rs` | The design system, kept in step with Tesseract's |
 | `src/logo.rs` | The mark and the launcher icon |
 | `src/caret.rs` | The only place that touches egui's text-cursor internals |
@@ -340,4 +423,6 @@ egui and the text cursor API has shifted, `src/caret.rs` is the only file that
 needs attention.
 
 MIT licensed. Outfit and Courier Prime are bundled under the SIL Open Font
-License; see `assets/fonts/`.
+License; see `assets/fonts/`. printpdf 0.7.0 is vendored (MIT) with a
+two-line fix so it also builds for the browser; see
+`vendor/printpdf/VENDORED.md`.

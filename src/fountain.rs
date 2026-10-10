@@ -12,8 +12,11 @@ use crate::model::{Document, Element, Meta};
 /// The rules followed are Fountain 1.1's, in its order of precedence: forced
 /// elements (`.`, `@`, `>`, `!`) first, then scene headings by their prefix,
 /// transitions by their `TO:`, and characters as an all-caps line after a
-/// blank one with something straight under it. Notes, boneyard and section
-/// markers are dropped; synopses (`= ...`) become the scene's card.
+/// blank one with something straight under it. Notes and boneyard are
+/// dropped; synopses (`= ...`) become the scene's card. A top-level section
+/// (`# ACT ONE`), or a centred act title (`>ACT ONE<`, `>TEASER<`), starts an
+/// act; a centred `>END OF ACT ONE<` is the act's close, which Northstar
+/// prints by itself, so it is not kept twice.
 pub fn parse(text: &str) -> Document {
     let text = strip_between(&strip_between(text, "/*", "*/"), "[[", "]]");
     let lines: Vec<&str> = text.lines().collect();
@@ -77,8 +80,16 @@ pub fn parse(text: &str) -> Document {
             prev_blank = false;
             continue;
         }
-        // sections and page breaks carry no text of their own
-        if line.starts_with('#') || line.chars().all(|c| c == '=') {
+        // a top-level section is an act; deeper ones (sequences) and page
+        // breaks carry no text of their own
+        if let Some(rest) = line.strip_prefix('#') {
+            if !rest.starts_with('#') {
+                push_act(&mut doc, rest);
+            }
+            prev_blank = false;
+            continue;
+        }
+        if line.chars().all(|c| c == '=') {
             prev_blank = false;
             continue;
         }
@@ -95,11 +106,19 @@ pub fn parse(text: &str) -> Document {
             prev_blank = false;
             continue;
         }
-        // centred text is action here; forced transition otherwise
+        // centred text is action here, or an act's title or close; forced
+        // transition otherwise
         if let Some(rest) = line.strip_prefix('>') {
             let rest = rest.trim();
             if let Some(inner) = rest.strip_suffix('<') {
-                doc.push(Element::Action, inner.trim());
+                let bare = inner.trim().trim_matches(|c| c == '*' || c == '_').trim().to_uppercase();
+                let in_act = doc.blocks.iter().any(|b| b.element == Element::Act);
+                let same = doc.blocks.last().map(|b| b.element == Element::Act && b.text == bare).unwrap_or(false);
+                if is_act_title(&bare) || same {
+                    push_act(&mut doc, &bare);
+                } else if !(in_act && bare.starts_with("END OF ")) {
+                    doc.push(Element::Action, inner.trim());
+                }
             } else {
                 doc.push(Element::Transition, &rest.to_uppercase());
             }
@@ -136,6 +155,26 @@ pub fn parse(text: &str) -> Document {
     doc.ensure_not_empty();
     doc.reseed_ids();
     doc
+}
+
+/// What a centred act title looks like: ACT ONE, ACT 2, TEASER, COLD OPEN.
+fn is_act_title(upper: &str) -> bool {
+    let after_act = upper.strip_prefix("ACT ").map(str::trim).unwrap_or("");
+    (!after_act.is_empty() && !after_act.contains(' '))
+        || matches!(upper, "TEASER" | "COLD OPEN" | "PROLOGUE" | "EPILOGUE")
+}
+
+/// Start an act — unless one with this title was just started, which is a
+/// file marking the same act both as a section and as a centred title.
+fn push_act(doc: &mut Document, title: &str) {
+    let title = title.trim().trim_matches(|c| c == '*' || c == '_').trim().to_uppercase();
+    if let Some(last) = doc.blocks.last_mut() {
+        if last.element == Element::Act && (last.text == title || last.text.is_empty()) {
+            last.text = title;
+            return;
+        }
+    }
+    doc.push(Element::Act, &title);
 }
 
 fn is_heading(upper: &str) -> bool {
@@ -295,6 +334,10 @@ pub fn parse_fdx(text: &str) -> Document {
         rest = &body_from[end + "</Paragraph>".len()..];
 
         let kind = attr(tag, "Type").unwrap_or_default();
+        // the close of an act is printed by Northstar itself
+        if kind == "End of Act" {
+            continue;
+        }
         let element = match kind.as_str() {
             "Scene Heading" => Element::SceneHeading,
             "Character" => Element::Character,
@@ -302,6 +345,7 @@ pub fn parse_fdx(text: &str) -> Document {
             "Dialogue" => Element::Dialogue,
             "Transition" => Element::Transition,
             "Shot" => Element::Shot,
+            "New Act" => Element::Act,
             _ => Element::Action,
         };
         let words = words.trim();
