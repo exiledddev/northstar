@@ -473,46 +473,91 @@ fn shape(d: &Document) -> Vec<(Element, String)> {
 }
 
 #[test]
-fn ctrl_shift_enter_starts_an_act_at_the_scene_you_are_in() {
+fn a_new_act_goes_where_the_cursor_is_even_deep_in_a_long_scene() {
+    // what was reported: ACT ONE, one long scene, the cursor far down it —
+    // the new act went to the top, straight after ACT ONE
+    let mut long = Document::default();
+    long.blocks.clear();
+    long.meta.title = "Long".into();
+    long.push(Element::Act, "ACT ONE");
+    long.push(Element::SceneHeading, "INT. HALL - DAY");
+    for k in 1..=6 {
+        long.push(Element::Action, &format!("Beat {k}."));
+    }
+    long.reseed_ids();
+    let mut t = Team1::with(Role::Editor, |s| s.docs.push((PathBuf::from("long"), long)));
+    t.app.debug_open_from_home(PathBuf::from("long"));
+    t.frames(2);
+    let beat4 = t.app.doc().blocks.iter().find(|b| b.text == "Beat 4.").unwrap().id;
+    t.app.focus_on(beat4);
+    t.frames(2);
+    t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    let texts: Vec<String> = t.app.doc().blocks.iter().map(|b| b.text.clone()).collect();
+    assert_eq!(
+        texts,
+        ["ACT ONE", "INT. HALL - DAY", "Beat 1.", "Beat 2.", "Beat 3.", "Beat 4.", "ACT TWO", "Beat 5.", "Beat 6."],
+        "the act starts on the line after the cursor"
+    );
+    assert_eq!(t.app.doc().blocks[6].element, Element::Act);
+    assert_eq!(t.app.focus_block(), Some(t.app.doc().blocks[6].id), "the cursor is in its title");
+}
+
+#[test]
+fn ctrl_shift_enter_starts_an_act_at_the_cursor() {
     let mut t = Team1::with(Role::Editor, |s| s.docs.push((PathBuf::from("arc"), three_scenes())));
     t.app.debug_open_from_home(PathBuf::from("arc"));
     t.frames(2);
+    // [INT. ONE, One., EXT. TWO, Two., INT. THREE, Three.]
 
-    // in the second scene: the act goes in before its heading
+    // at the end of a line: the act starts on the next line
     let two = t.app.doc().blocks[3].id;
     t.app.focus_on(two);
     t.frames(2);
     t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
-    assert_eq!(t.app.doc().blocks[2].element, Element::Act);
-    assert_eq!(t.app.doc().blocks[2].text, "ACT ONE");
-    assert_eq!(t.app.doc().blocks[3].text, "EXT. TWO - NIGHT");
-    assert_eq!(t.app.focus_block(), Some(t.app.doc().blocks[2].id), "the caret is in its title");
+    assert_eq!(shape(t.app.doc())[4], (Element::Act, "ACT ONE".to_string()));
+    assert_eq!(t.app.doc().blocks[5].text, "INT. THREE - DAWN");
+    assert_eq!(t.app.focus_block(), Some(t.app.doc().blocks[4].id), "the cursor is in its title");
     assert_eq!(t.app.doc().scenes().len(), 3, "no scene was made or lost");
 
-    // one before the first scene: it is ACT ONE now, and the other moves up
-    let one = t.app.doc().blocks[1].id;
+    // in a scene heading: the act starts with that scene, and the acts after
+    // it that still have their given names move up one
+    let one = t.app.doc().blocks[0].id;
     t.app.focus_on(one);
     t.frames(2);
     t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
     let acts: Vec<String> = t.app.doc().acts().iter().map(|a| a.title.clone()).collect();
     assert_eq!(acts, ["ACT ONE", "ACT TWO"]);
     assert_eq!(t.app.doc().blocks[0].element, Element::Act);
+    assert_eq!(t.app.doc().blocks[1].text, "INT. ONE - DAY");
 
-    // renamed acts keep their names
+    // at the very start of a line: that line goes into the new act
     t.app.doc_mut().blocks[0].text = "COLD OPEN".into();
     let three = t.app.doc().blocks.iter().find(|b| b.text == "Three.").unwrap().id;
-    t.app.focus_on(three);
+    t.app.focus_start(three);
     t.frames(2);
     t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    let i = t.app.doc().index_of(three).unwrap();
+    assert_eq!(shape(t.app.doc())[i - 1], (Element::Act, "ACT THREE".to_string()));
     let acts: Vec<String> = t.app.doc().acts().iter().map(|a| a.title.clone()).collect();
-    assert_eq!(acts, ["COLD OPEN", "ACT TWO", "ACT THREE"]);
+    assert_eq!(acts, ["COLD OPEN", "ACT TWO", "ACT THREE"], "renamed acts keep their names");
+
+    // on an empty line: that line becomes the act
+    let n = t.app.doc().blocks.len();
+    let blank = t.app.doc_mut().new_block(Element::Action, "");
+    let blank_id = blank.id;
+    t.app.doc_mut().blocks.push(blank);
+    t.app.focus_on(blank_id);
+    t.frames(2);
+    t.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
+    assert_eq!(t.app.doc().blocks.len(), n + 1, "no line was added: the empty one became the act");
+    assert_eq!(shape(t.app.doc())[n], (Element::Act, "ACT FOUR".to_string()));
 
     // and it reaches the team library as level-one headings
     t.app.debug_save();
     t.frames(3);
     let saved = t.shared.borrow().saves.last().map(|(_, md)| md.clone()).unwrap_or_default();
     assert!(saved.contains("# COLD OPEN\n\n## INT. ONE - DAY"), "{saved}");
-    assert!(saved.contains("# ACT THREE\n\n## INT. THREE - DAWN"), "{saved}");
+    assert!(saved.contains("# ACT THREE\n\nThree.\n\n# ACT FOUR"), "{saved}");
 }
 
 #[test]

@@ -45,6 +45,9 @@ pub enum Caret {
 
 pub struct EditorState {
     pub focus_block: Option<u64>,
+    /// Where the caret is in that block, in characters; `None` while text is
+    /// selected or nothing has been written in yet.
+    pub caret: Option<usize>,
     pub pending_focus: Option<(u64, Caret)>,
     pub scroll_to_focus: bool,
     pub font_px: f32,
@@ -62,6 +65,7 @@ impl Default for EditorState {
     fn default() -> Self {
         Self {
             focus_block: None,
+            caret: None,
             pending_focus: None,
             scroll_to_focus: false,
             font_px: 16.0,
@@ -286,6 +290,7 @@ fn page_body(
         if focused {
             any_focus = true;
             st.focus_block = Some(bid);
+            st.caret = pos;
             let at = pos.unwrap_or(len);
             let ghost = ghost.clone();
             // an act's title is never split: Enter starts its first scene

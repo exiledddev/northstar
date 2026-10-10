@@ -881,40 +881,55 @@ impl App {
         self.baseline = self.doc.clone();
     }
 
-    /// A new act, starting at the scene the caret is in. It is called after
-    /// its place (ACT TWO…), and the acts after it that still carry their
-    /// given name move up one, so the numbers keep running in order. The
-    /// caret lands in its title, ready to rename it TEASER or COLD OPEN.
+    /// A new act, where the caret is: on the line after it, or — in a scene
+    /// heading, or at the very start of a line — with that line. An empty line
+    /// becomes the act. It is called after its place (ACT TWO…), and the acts
+    /// after it that still carry their given name move up one, so the numbers
+    /// keep running in order. The caret lands in its title, ready to rename it
+    /// TEASER or COLD OPEN.
     fn new_act(&mut self) {
-        let focus = self.ed.focus_block;
-        let at_block = focus.and_then(|id| self.doc.index_of(id));
-        let at = match (focus.and_then(|id| self.doc.scene_of(id)), at_block) {
-            // before the heading of the scene being written
-            (Some(k), _) => self.doc.scenes()[k].start,
-            // in an act's title: the next act, after this one
-            (None, Some(i)) if self.doc.blocks[i].element == Element::Act => self
-                .doc
-                .act_of(self.doc.blocks[i].id)
-                .and_then(|k| self.doc.acts().get(k).map(|a| a.end))
-                .unwrap_or(self.doc.blocks.len()),
-            // before the first heading: where the caret is
-            (None, Some(i)) => i,
-            (None, None) => self.doc.blocks.len(),
+        let focus = self.ed.focus_block.and_then(|id| self.doc.index_of(id));
+        // (where it goes, and whether the empty line there becomes it)
+        let (at, replace) = match focus {
+            None => (self.doc.blocks.len(), false),
+            Some(i) => {
+                let b = &self.doc.blocks[i];
+                match b.element {
+                    // the act starts with this scene
+                    Element::SceneHeading => (i, false),
+                    // in an act's title: the next act, straight after it
+                    Element::Act => (i + 1, false),
+                    _ if b.text.trim().is_empty() => (i, true),
+                    _ if self.ed.caret == Some(0) => (i, false),
+                    _ => (i + 1, false),
+                }
+            }
         };
         self.checkpoint();
         let before = self.doc.blocks[..at].iter().filter(|b| b.element == Element::Act).count();
         // the acts after it that still have their given names move up one
         let mut n = before + 1;
-        for b in self.doc.blocks[at..].iter_mut().filter(|b| b.element == Element::Act) {
+        let after = if replace { at + 1 } else { at };
+        for b in self.doc.blocks[after..].iter_mut().filter(|b| b.element == Element::Act) {
             if b.text.trim() == act_title(n) {
                 b.text = act_title(n + 1);
             }
             n += 1;
         }
         let title = act_title(before + 1);
-        let b = self.doc.new_block(Element::Act, &title);
-        let id = b.id;
-        self.doc.blocks.insert(at, b);
+        let id = if replace {
+            let b = &mut self.doc.blocks[at];
+            b.element = Element::Act;
+            b.text = title.clone();
+            b.note.clear();
+            b.tint = None;
+            b.id
+        } else {
+            let b = self.doc.new_block(Element::Act, &title);
+            let id = b.id;
+            self.doc.blocks.insert(at, b);
+            id
+        };
         self.mode = Mode::Write;
         self.ed.focus(id, editor::Caret::Range(0, title.chars().count()));
         self.ed.scroll_to_focus = true;
@@ -1327,7 +1342,7 @@ impl App {
         }
         ui.add_space(6.0);
         ui.spacing_mut().item_spacing.x = 6.0;
-        let act_tip = format!("A new act, starting at the scene you are in  ·  {}", self.keys_for(keys::Command::NewAct));
+        let act_tip = format!("A new act, starting where the cursor is  ·  {}", self.keys_for(keys::Command::NewAct));
         let export_tip = format!("Export this script as a PDF  ·  {}", self.keys_for(keys::Command::QuickExport));
         if acts
             && ui::ribbon_button(
@@ -4407,6 +4422,9 @@ impl App {
     }
     pub fn focus_on(&mut self, id: u64) {
         self.ed.focus(id, Caret::End);
+    }
+    pub fn focus_start(&mut self, id: u64) {
+        self.ed.focus(id, Caret::Start);
     }
     pub fn debug_pending_ask(&self) -> bool {
         self.deck.asking()
