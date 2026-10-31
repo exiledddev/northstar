@@ -660,6 +660,36 @@ pub fn elide(s: &str, max: usize) -> String {
     }
 }
 
+/// Cut `text` to fit `max_w` points in `font` (with `tracking` between
+/// letters, as `theme::tracked_text` draws it), ending in "…". Measured, not
+/// guessed from a character count, so it holds for any typeface. Text that
+/// already fits comes back as it is.
+pub fn elide_to_width(ctx: &egui::Context, text: &str, font: egui::FontId, tracking: f32, max_w: f32) -> String {
+    let fits = |s: &str| theme::tracked_width(ctx, s, font.clone(), tracking) <= max_w;
+    if fits(text) {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |n: usize| -> String {
+        let head: String = chars[..n].iter().collect();
+        format!("{}\u{2026}", head.trim_end())
+    };
+    // the most characters that still fit with the ellipsis
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(&cut(mid)) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 && !fits("\u{2026}") {
+        return String::new();
+    }
+    cut(lo)
+}
+
 fn text_width(ui: &egui::Ui, s: &str) -> f32 {
     ui.painter()
         .layout_no_wrap(s.to_string(), theme::font_mono(theme::T_CAP), Color32::WHITE)

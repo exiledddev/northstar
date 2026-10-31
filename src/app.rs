@@ -1634,16 +1634,15 @@ impl App {
 
         // the open script's title is the live one, not the one on disk
         let title = if selected { self.title_or_untitled() } else { e.title.clone() };
-        let right_pad = 4.0 + 26.0 * (hot.max(if e.starred { 1.0 } else { 0.0 }));
-        ui.painter().text(
+        // keep clear of the star (and the bin, when you reach for the row)
+        let right_pad = if hot > 0.02 { 60.0 } else if e.starred { 36.0 } else { 4.0 };
+        let title_font = if selected { theme::font_med(theme::T_SM) } else { theme::font(theme::T_SM) };
+        let row_clip = ui.painter().with_clip_rect(rect.shrink(1.0));
+        row_clip.text(
             Pos2::new(rect.left() + 16.0, rect.top() + 14.0),
             egui::Align2::LEFT_CENTER,
-            ui::elide(&title, ((rect.width() - 34.0 - right_pad) / 6.6) as usize),
-            if selected {
-                theme::font_med(theme::T_SM)
-            } else {
-                theme::font(theme::T_SM)
-            },
+            ui::elide_to_width(ui.ctx(), &title, title_font.clone(), 0.0, rect.width() - 24.0 - right_pad),
+            title_font,
             p.text,
         );
         let pages = if selected { self.layout.pages } else { e.pages };
@@ -1654,10 +1653,11 @@ impl App {
                 if live {
                     ui.painter().circle_filled(Pos2::new(x + 3.0, rect.bottom() - 13.0), 2.6, p.ok);
                 }
-                ui.painter().text(
-                    Pos2::new(x + if live { 11.0 } else { 0.0 }, rect.bottom() - 13.0),
+                let lx = x + if live { 11.0 } else { 0.0 };
+                row_clip.text(
+                    Pos2::new(lx, rect.bottom() - 13.0),
                     egui::Align2::LEFT_CENTER,
-                    ui::elide(&line, ((rect.width() - 40.0 - right_pad) / 6.0) as usize),
+                    ui::elide_to_width(ui.ctx(), &line, theme::font(theme::T_MICRO), 0.0, rect.right() - lx - 8.0 - right_pad),
                     theme::font(theme::T_MICRO),
                     if live { p.text_dim } else { p.text_faint },
                 );
@@ -2114,15 +2114,12 @@ impl App {
                     } else {
                         name
                     };
-                    ui.painter().text(
+                    let label_font = if is_live { theme::font_med(theme::T_SM) } else { theme::font(theme::T_SM) };
+                    ui.painter().with_clip_rect(rect).text(
                         Pos2::new(text_left, cy - 6.5),
                         egui::Align2::LEFT_CENTER,
-                        ui::elide(&label, ((rect.right() - text_left - 16.0) / 7.2) as usize),
-                        if is_live {
-                            theme::font_med(theme::T_SM)
-                        } else {
-                            theme::font(theme::T_SM)
-                        },
+                        ui::elide_to_width(ui.ctx(), &label, label_font.clone(), 0.0, rect.right() - text_left - 10.0),
+                        label_font,
                         if is_live { p.text } else { theme::mix(p.text_dim, p.text, hot) },
                     );
                     let (page, eighths) = self.layout.lengths.get(&sc.id).copied().unwrap_or((0, 0));
@@ -2221,11 +2218,7 @@ impl App {
         let pages_w = theme::tracked_width(ui.ctx(), &pages, font.clone(), 0.8);
         let show_pages = !pages.is_empty() && room > pages_w + 70.0;
         let title_room = if show_pages { room - pages_w - 12.0 } else { room };
-        let mut shown = title.to_uppercase();
-        while theme::tracked_width(ui.ctx(), &shown, font.clone(), 0.8) > title_room && shown.chars().count() > 2 {
-            let n = shown.chars().count();
-            shown = ui::elide(&shown, n - 1);
-        }
+        let shown = ui::elide_to_width(ui.ctx(), &title.to_uppercase(), font.clone(), 0.8, title_room);
         theme::tracked_text(
             ui.painter(),
             Pos2::new(text_left, cy),
@@ -2342,7 +2335,7 @@ impl App {
                     ui.painter().text(
                         Pos2::new(rect.left() + 24.0, rect.center().y),
                         egui::Align2::LEFT_CENTER,
-                        ui::elide(&c.name, ((rect.width() - 70.0) / 6.3) as usize),
+                        ui::elide_to_width(ui.ctx(), &c.name, theme::font(theme::T_SM), 0.0, rect.width() - 76.0),
                         theme::font(theme::T_SM),
                         theme::mix(p.text_dim, p.text, hot),
                     );
@@ -2483,12 +2476,23 @@ impl App {
                 .layout(Layout::top_down(Align::Min)),
         );
         let title_id = egui::Id::new("ns-script-title");
+        // a long title steps its size down to fit the band rather than run
+        // off its edge; past the floor the field scrolls, as any field does
+        let title_px = {
+            let room = head.available_width() - editor::GUTTER - 20.0;
+            let full = theme::tracked_width(head.ctx(), &self.doc.meta.title, theme::font_bold(theme::T_TITLE), 0.0);
+            if full <= room {
+                theme::T_TITLE
+            } else {
+                (theme::T_TITLE * room / full * 0.97).max(TITLE_MIN_PX)
+            }
+        };
         let r = head.add(
             egui::TextEdit::singleline(&mut self.doc.meta.title)
                 .id(title_id)
                 .frame(false)
                 .desired_width(f32::INFINITY)
-                .font(theme::font_bold(theme::T_TITLE))
+                .font(theme::font_bold(title_px))
                 .text_color(p.text)
                 .margin(egui::Margin {
                     left: editor::GUTTER,
@@ -4463,6 +4467,9 @@ fn element_chip(ui: &mut egui::Ui, e: Element, on: bool, chord: &str) -> bool {
     resp.on_hover_text(format!("{}  ·  {chord}", e.label())).clicked()
 }
 
+/// The smallest a long script title shrinks to in the band over the page.
+const TITLE_MIN_PX: f32 = 16.0;
+
 /// How far a script sits in from the header of the section it is under.
 const INDENT: f32 = 20.0;
 
@@ -4512,7 +4519,7 @@ fn section_header(
     theme::tracked_text(
         ui.painter(),
         Pos2::new(rect.left() + 42.0, rect.center().y),
-        &ui::elide(label, ((rect.width() - 96.0) / 7.0) as usize).to_uppercase(),
+        &ui::elide_to_width(ui.ctx(), &label.to_uppercase(), theme::font_hud(theme::T_MICRO + 0.5), 0.8, rect.width() - 90.0),
         theme::font_hud(theme::T_MICRO + 0.5),
         theme::mix(p.text_dim, p.text, hot),
         0.8,
