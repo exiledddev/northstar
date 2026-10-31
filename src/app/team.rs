@@ -24,13 +24,16 @@ impl App {
 
     // ---------- the title bar ----------
 
-    /// The right-hand end of the title bar on a team: the way home, then you.
+    /// The right-hand end of the title bar: the way home, and on a team, you.
     pub(super) fn title_extras(&mut self, ui: &mut egui::Ui) {
         let Some((me, role, team_name)) = self
             .store
             .team()
             .map(|t| (t.me.clone(), t.role, t.name.clone()))
         else {
+            if !self.home && ui::icon_button(ui, Icon::Home, "All scripts", 28.0) {
+                self.go_home();
+            }
             return;
         };
         let p = pal();

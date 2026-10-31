@@ -1,7 +1,7 @@
 //! Settings → Keyboard: every shortcut, and a chord of your own for any of
 //! them. They are kept with your settings, which on a team library are
 //! your account's, so they are yours alone and follow you to any browser you
-//! sign in on. Reset puts back the shortcuts Northstar ships with.
+//! sign in on. Reset puts back the shortcuts Blackline ships with.
 
 use eframe::egui::{self, Align, Key, Layout, Rect, Sense, Stroke, Vec2};
 
@@ -89,7 +89,7 @@ impl App {
             }
             if !changed {
                 ui.label(
-                    egui::RichText::new("All shortcuts are Northstar's own.")
+                    egui::RichText::new("All shortcuts are Blackline's own.")
                         .font(theme::font(theme::T_CAP))
                         .color(p.text_faint),
                 );
@@ -165,7 +165,7 @@ fn keycap(ui: &mut egui::Ui, text: &str, listening: bool, custom: bool) -> bool 
             rect.left_bottom() + Vec2::new(5.0, -0.5),
             rect.right_bottom() + Vec2::new(-5.0, -0.5),
         ],
-        Stroke::new(1.0, theme::wash(p.line_strong, 160)),
+        Stroke::new(1.0_f32, theme::wash(p.line_strong, 160)),
     );
     let edge = if listening {
         theme::wash(p.primary_light, 200)
@@ -174,7 +174,7 @@ fn keycap(ui: &mut egui::Ui, text: &str, listening: bool, custom: bool) -> bool 
     } else {
         theme::wash(p.line_strong, 140)
     };
-    ui.painter().rect_stroke(rect, egui::Rounding::same(6.0), Stroke::new(1.0, edge));
+    ui.painter().rect_stroke(rect, egui::Rounding::same(6.0), Stroke::new(1.0_f32, edge));
     let ink = if listening {
         p.primary_light
     } else if custom {

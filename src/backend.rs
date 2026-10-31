@@ -2,7 +2,7 @@
 //!
 //! The app never touches a file or a server itself. It talks to a [`Store`]:
 //! on the desktop that is [`LocalBackend`], the user's own library folder,
-//! exactly as Northstar has always kept it; in the browser it is the team
+//! exactly as Blackline has always kept it; in the browser it is the team
 //! library on the server, behind the same trait (in the web crate).
 //!
 //! Every call answers at once. A store that has to go and ask somebody — the
@@ -291,14 +291,6 @@ pub trait Store {
 
     fn read_settings(&mut self) -> Settings;
     fn write_settings(&mut self, s: &Settings) -> Result<(), String>;
-    /// Tesseract's look and when it last changed, where Tesseract is installed.
-    fn tesseract_look(&mut self) -> Option<(Settings, SystemTime)> {
-        None
-    }
-    /// Has Tesseract been run here, so there is a look to follow?
-    fn has_tesseract(&self) -> bool {
-        false
-    }
 
     // ---- the world outside ----
 
@@ -340,8 +332,8 @@ mod local {
     use crate::settings::{AfterExport, Settings};
     use crate::storage::{self, Entry, Snapshot};
 
-    /// The library folder under `~/.local/share/northstar`, kept exactly as
-    /// Northstar always has: these are the same `storage` calls the app made
+    /// The library folder under `~/.local/share/blackline`, kept exactly as
+    /// Blackline always has: these are the same `storage` calls the app made
     /// itself before there was a trait.
     #[derive(Default)]
     pub struct LocalBackend {
@@ -473,14 +465,6 @@ mod local {
             storage::write_settings(s).map_err(|e| e.to_string())
         }
 
-        fn tesseract_look(&mut self) -> Option<(Settings, SystemTime)> {
-            storage::read_tesseract_settings()
-        }
-
-        fn has_tesseract(&self) -> bool {
-            storage::tesseract_settings_path().exists()
-        }
-
         fn deliver(&mut self, name: &str, bytes: Vec<u8>, after: Option<AfterExport>) -> Result<String, String> {
             storage::ensure_dirs().map_err(|e| e.to_string())?;
             let path = storage::exports_dir().join(name);
@@ -502,7 +486,7 @@ mod local {
         }
 
         fn open_url(&mut self, url: &str) {
-            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+            storage::open_target(std::ffi::OsStr::new(url));
         }
 
         fn reveal(&mut self, key: Option<&Path>) {

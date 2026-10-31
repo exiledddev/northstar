@@ -69,7 +69,7 @@ pub enum Icon {
     Sparkle,
     Warning,
     Cube,
-    // ---- drawn for Northstar, in the same hand ----
+    // ---- drawn for Blackline, in the same hand ----
     Users,
     Grid,
     Upload,

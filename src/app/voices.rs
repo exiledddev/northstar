@@ -2,8 +2,7 @@
 //! colour, in every script she is in and on every page she prints on. A chosen
 //! colour is a hue kept in the script itself, so the whole team sees the same
 //! one; it is drawn at the theme's own depth, so it reads in any theme and as
-//! ink on paper. Choosing is the team edition's, for now: the desktop shows
-//! chosen colours but does not offer to choose them.
+//! ink on paper.
 
 use eframe::egui::{self, Align, Layout, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -38,9 +37,9 @@ impl App {
         }
     }
 
-    /// May character colours be chosen here? A team library, colours on.
+    /// May character colours be chosen here? Whenever colours are on.
     pub(super) fn can_choose_voices(&self) -> bool {
-        self.team_edition() && self.settings.character_colors
+        self.settings.character_colors
     }
 
     pub(super) fn open_voice_picker(&mut self, name: &str, at: Pos2) {
@@ -144,7 +143,7 @@ impl App {
                 ui.painter().circle_filled(dot, 5.0, c);
                 if chosen {
                     // a ring: this colour was chosen, not dealt
-                    ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2, theme::wash(c, 200)));
+                    ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2_f32, theme::wash(c, 200)));
                 }
                 ui.painter().galley(Pos2::new(rect.left() + 25.0, rect.center().y - g.rect.height() * 0.5), g, c);
                 let resp = resp.on_hover_text(if chosen { "Chosen · click to change" } else { "Dealt · click to choose" });
@@ -273,7 +272,7 @@ fn hue_track(ui: &mut egui::Ui, chosen: Option<u16>) -> Option<u16> {
         let knob = Pos2::new(x, track.center().y);
         ui.painter().circle_filled(knob, 7.0, p.solid);
         ui.painter().circle_filled(knob, 5.0, theme::voice_of_hue(h));
-        ui.painter().circle_stroke(knob, 7.0, Stroke::new(1.0, theme::wash(p.text, 120)));
+        ui.painter().circle_stroke(knob, 7.0, Stroke::new(1.0_f32, theme::wash(p.text, 120)));
     }
     if resp.hovered() || resp.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

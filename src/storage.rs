@@ -3,7 +3,7 @@
 //! Library root (created on first run):
 //!
 //! ```text
-//! ~/.local/share/northstar/
+//! ~/.local/share/blackline/   (or ~/.local/share/northstar/, kept where it was)
 //!     scripts/       <- one .md per screenplay
 //!     exports/       <- pdf / fdx / fountain / txt output
 //!     snapshots/     <- dated copies of a script, one folder per script
@@ -37,7 +37,7 @@
 //!
 //! Blocks are separated by a blank line and never contain a newline, which is
 //! what makes parsing a single pass with no ambiguity. Files written by the
-//! first Northstar open unchanged; files written by this one open in it.
+//! first Blackline open unchanged; files written by this one open in it.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
@@ -53,8 +53,17 @@ use crate::model::{Block, Document, Element, Meta};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::settings::Settings;
 
+/// Where per-user data lives: `~/.local/share` on Linux, `%APPDATA%` on
+/// Windows. `XDG_DATA_HOME` is honoured everywhere when it is set to an
+/// absolute path — on Linux that is the standard; elsewhere it lets the tests
+/// keep to a sandbox of their own.
 #[cfg(not(target_arch = "wasm32"))]
 fn data_home() -> PathBuf {
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        if x.is_absolute() {
+            return x;
+        }
+    }
     dirs::data_dir().unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -64,7 +73,22 @@ fn data_home() -> PathBuf {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn library_root() -> PathBuf {
-    data_home().join("northstar")
+    library_in(&data_home())
+}
+
+/// The library under `home`. A library made when the app was called
+/// Northstar stays exactly where it is and keeps being used: nothing is
+/// moved or copied.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn library_in(home: &Path) -> PathBuf {
+    let name = if cfg!(windows) { "Blackline" } else { "blackline" };
+    let fresh = home.join(name);
+    let legacy = home.join("northstar");
+    if !fresh.exists() && legacy.is_dir() {
+        legacy
+    } else {
+        fresh
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -85,12 +109,6 @@ pub fn snapshots_dir() -> PathBuf {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn settings_path() -> PathBuf {
     library_root().join("settings.conf")
-}
-
-/// Tesseract's own settings, for following its theme.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn tesseract_settings_path() -> PathBuf {
-    data_home().join("tesseract").join("settings.conf")
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,7 +185,7 @@ pub fn list_scripts() -> Vec<Entry> {
             author: meta.author.clone(),
         });
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|a| std::cmp::Reverse(a.modified));
     out
 }
 
@@ -551,32 +569,60 @@ pub fn write_settings(s: &Settings) -> io::Result<()> {
     fs::write(settings_path(), s.serialize())
 }
 
-/// Tesseract's settings, if Tesseract is installed and has been run. Read
-/// with the same parser — the keys the two apps share are spelled the same.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn read_tesseract_settings() -> Option<(Settings, SystemTime)> {
-    let path = tesseract_settings_path();
-    let when = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-    let text = fs::read_to_string(&path).ok()?;
-    // Tesseract's own default theme is Zen; a file that never names one means it
-    Some((Settings::parse(&format!("theme = zen\n{text}")), when))
-}
-
 // ---------- the desktop ----------
 
-/// Hand a path to the desktop (Dolphin, Nautilus, default PDF viewer, ...).
+/// A command that runs without flashing a console window on Windows.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn open_with_desktop(path: &Path) {
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+fn quiet(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
 }
 
-/// Open the file manager with `path` selected, where the desktop speaks the
-/// freedesktop FileManager1 interface. KDE's Dolphin, Nautilus and Nemo all do.
-/// Falls back to simply opening the containing folder.
+/// Hand a path or a web address to the desktop: the default app for it
+/// (Dolphin, Nautilus, a PDF viewer, the browser...).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_with_desktop(path: &Path) {
+    open_target(path.as_os_str());
+}
+
+/// The same, for anything the desktop can open: a file, a folder or a URL.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_target(target: &std::ffi::OsStr) {
+    #[cfg(windows)]
+    let _ = quiet("explorer").arg(target).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = quiet("open").arg(target).spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = quiet("xdg-open").arg(target).spawn();
+}
+
+/// Open the file manager with `path` selected: Explorer on Windows; on Linux,
+/// where the desktop speaks the freedesktop FileManager1 interface (KDE's
+/// Dolphin, Nautilus and Nemo all do). Falls back to simply opening the
+/// containing folder.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reveal_in_file_manager(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut select = std::ffi::OsString::from("/select,");
+        select.push(path.as_os_str());
+        let _ = quiet("explorer").arg(select).spawn();
+    }
+    #[cfg(not(windows))]
+    reveal_freedesktop(path);
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+fn reveal_freedesktop(path: &Path) {
     let uri = format!("file://{}", path.display());
-    let spoke = std::process::Command::new("dbus-send")
+    let spoke = quiet("dbus-send")
         .args([
             "--session",
             "--print-reply",
@@ -598,10 +644,31 @@ pub fn reveal_in_file_manager(path: &Path) {
     }
 }
 
-/// Ask the desktop for a file to import. KDE's own dialog where there is one,
-/// GNOME's otherwise. Blocks, so call it off the UI thread. `None` if the
-/// dialog was cancelled or neither tool is installed.
-#[cfg(not(target_arch = "wasm32"))]
+/// Ask the desktop for a file to import: Windows' own open dialog; on Linux,
+/// KDE's dialog where there is one, GNOME's otherwise. Blocks, so call it off
+/// the UI thread. `None` if the dialog was cancelled.
+#[cfg(windows)]
+pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
+    // the stock Windows Forms dialog, through PowerShell, which every Windows
+    // since 7 has: no extra dependency for one dialog
+    let script = "Add-Type -AssemblyName System.Windows.Forms; \
+        $d = New-Object System.Windows.Forms.OpenFileDialog; \
+        $d.Title = 'Import a screenplay'; \
+        $d.Filter = 'Screenplays|*.fountain;*.spmd;*.fdx;*.md;*.txt|All files|*.*'; \
+        if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write($d.FileName) }";
+    let out = quiet("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+        .output()
+        .map_err(|e| format!("Could not open the file dialog ({e}) — drop the file onto the window instead."))?;
+    let picked = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if out.status.success() && !picked.is_empty() {
+        Some(PathBuf::from(picked))
+    } else {
+        None
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let tries: [(&str, Vec<String>); 2] = [
@@ -641,7 +708,7 @@ pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
 }
 
 /// Read a screenplay from another format into a document. Fountain, Final
-/// Draft and Northstar's own markdown are understood; anything else is read
+/// Draft and Blackline's own markdown are understood; anything else is read
 /// as Fountain, which degrades to plain action.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn import_file(path: &Path) -> Result<Document, String> {

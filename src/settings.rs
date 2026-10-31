@@ -2,47 +2,8 @@
 //!
 //! Written to `settings.conf` next to the scripts as plain `key = value`
 //! lines, so it can be read and fixed with a text editor if it ever gets into
-//! a state the app will not open. Every key Northstar shares with Tesseract is
-//! spelled exactly as Tesseract spells it, so one parser reads both files —
-//! that is what lets Northstar follow Tesseract's theme.
-
-use crate::theme::ThemeId;
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum BlurMode {
-    /// Ask the compositor; fall back to opaque islands if it says no.
-    #[default]
-    Auto,
-    /// Stay translucent even if the blur could not be installed.
-    Always,
-    /// Never go translucent.
-    Off,
-}
-
-impl BlurMode {
-    pub const ALL: [BlurMode; 3] = [BlurMode::Auto, BlurMode::Always, BlurMode::Off];
-    pub fn label(self) -> &'static str {
-        match self {
-            BlurMode::Auto => "Auto",
-            BlurMode::Always => "Always",
-            BlurMode::Off => "Off",
-        }
-    }
-    fn slug(self) -> &'static str {
-        match self {
-            BlurMode::Auto => "auto",
-            BlurMode::Always => "always",
-            BlurMode::Off => "off",
-        }
-    }
-    fn from_slug(s: &str) -> BlurMode {
-        match s {
-            "always" => BlurMode::Always,
-            "off" => BlurMode::Off,
-            _ => BlurMode::Auto,
-        }
-    }
-}
+//! a state the app will not open. Keys from older versions — the theme, the
+//! window blur, the glass and following Tesseract — are read and ignored.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum SortBy {
@@ -80,10 +41,10 @@ impl SortBy {
 /// What Quick Export (Ctrl+E) does with the PDF once it is written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AfterExport {
-    /// Open it in the default PDF viewer — what Northstar always did.
+    /// Open it in the default PDF viewer — what Blackline always did.
     #[default]
     Open,
-    /// Show it in the file manager — what Tesseract does.
+    /// Show it in the file manager.
     Reveal,
     /// Just say so.
     Nothing,
@@ -116,14 +77,10 @@ impl AfterExport {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    // ---- shared with Tesseract, same keys ----
-    pub theme: ThemeId,
-    /// The light/dark cast of the chosen theme.
+    // ---- the look ----
+    /// The light cast instead of the dark one.
     pub light_mode: bool,
     pub animations: bool,
-    pub blur: BlurMode,
-    /// How solid the glass is, 0.35 (very see-through) to 1.0 (opaque).
-    pub glass_opacity: f32,
     pub font_scale: f32,
     pub splash: bool,
     pub starred_first: bool,
@@ -131,10 +88,7 @@ pub struct Settings {
     /// Idle time before a touched script is written out, in milliseconds.
     pub autosave_ms: u64,
 
-    // ---- Northstar's own ----
-    /// Take theme, light/dark, glass, blur and motion from Tesseract whenever
-    /// Tesseract's settings are there to read.
-    pub match_tesseract: bool,
+    // ---- the app ----
     pub show_library: bool,
     pub show_scenes: bool,
     pub show_cast: bool,
@@ -181,17 +135,13 @@ pub const DEFAULT_YOUTRACK: &str = "https://markedexiled.youtrack.cloud/dashboar
 impl Default for Settings {
     fn default() -> Self {
         Settings {
-            theme: ThemeId::Bloodmoon,
             light_mode: false,
             animations: true,
-            blur: BlurMode::Auto,
-            glass_opacity: 0.62,
             font_scale: 1.0,
             splash: true,
             starred_first: true,
             sort_by: SortBy::Recent,
             autosave_ms: 1200,
-            match_tesseract: true,
             show_library: true,
             show_scenes: true,
             show_cast: false,
@@ -221,18 +171,14 @@ impl Settings {
     pub fn serialize(&self) -> String {
         let b = |v: bool| if v { "yes" } else { "no" };
         format!(
-            "# Northstar settings.\n\
-             theme = {}\n\
+            "# Blackline settings.\n\
              light_mode = {}\n\
              animations = {}\n\
-             blur = {}\n\
-             glass_opacity = {:.2}\n\
              font_scale = {:.2}\n\
              splash = {}\n\
              starred_first = {}\n\
              sort_by = {}\n\
              autosave_ms = {}\n\
-             match_tesseract = {}\n\
              show_library = {}\n\
              show_scenes = {}\n\
              show_cast = {}\n\
@@ -252,17 +198,13 @@ impl Settings {
              pdf_title_page = {}\n\
              pdf_scene_numbers = {}\n\
              pdf_character_colors = {}\n",
-            self.theme.slug(),
             b(self.light_mode),
             b(self.animations),
-            self.blur.slug(),
-            self.glass_opacity,
             self.font_scale,
             b(self.splash),
             b(self.starred_first),
             self.sort_by.slug(),
             self.autosave_ms,
-            b(self.match_tesseract),
             b(self.show_library),
             b(self.show_scenes),
             b(self.show_cast),
@@ -306,13 +248,8 @@ impl Settings {
             };
             let (k, v) = (k.trim(), v.trim());
             match k {
-                "theme" => s.theme = ThemeId::from_slug(v).unwrap_or(ThemeId::Bloodmoon),
                 "light_mode" => s.light_mode = yes(v),
                 "animations" => s.animations = yes(v),
-                "blur" => s.blur = BlurMode::from_slug(v),
-                "glass_opacity" => {
-                    s.glass_opacity = v.parse::<f32>().unwrap_or(0.62).clamp(0.35, 1.0);
-                }
                 "font_scale" => s.font_scale = v.parse::<f32>().unwrap_or(1.0).clamp(0.8, 1.4),
                 "splash" => s.splash = yes(v),
                 "starred_first" => s.starred_first = yes(v),
@@ -320,7 +257,6 @@ impl Settings {
                 "autosave_ms" => {
                     s.autosave_ms = v.parse::<u64>().unwrap_or(1200).clamp(150, 10_000)
                 }
-                "match_tesseract" => s.match_tesseract = yes(v),
                 "show_library" => s.show_library = yes(v),
                 "show_scenes" => s.show_scenes = yes(v),
                 "show_cast" => s.show_cast = yes(v),
@@ -360,17 +296,5 @@ impl Settings {
             s.pdf_scene_numbers = s.scene_numbers;
         }
         s
-    }
-
-    /// Take the look from Tesseract's settings: theme, cast, glass, blur and
-    /// motion. Nothing about what either app *does* crosses over.
-    pub fn adopt_look(&mut self, from: &Settings) -> bool {
-        let before = self.clone();
-        self.theme = from.theme;
-        self.light_mode = from.light_mode;
-        self.animations = from.animations;
-        self.blur = from.blur;
-        self.glass_opacity = from.glass_opacity;
-        *self != before
     }
 }

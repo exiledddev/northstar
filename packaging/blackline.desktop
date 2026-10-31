@@ -1,12 +1,12 @@
 [Desktop Entry]
 Type=Application
-Name=Northstar
+Name=Blackline
 GenericName=Screenwriting
 Comment=Write screenplays in standard format, stored as markdown
-Exec=northstar %F
-Icon=northstar
+Exec=blackline %F
+Icon=blackline
 Terminal=false
 Categories=Office;WordProcessor;AudioVideo;
 Keywords=screenplay;script;screenwriting;film;fountain;fdx;final draft;markdown;
 StartupNotify=true
-StartupWMClass=northstar
+StartupWMClass=blackline

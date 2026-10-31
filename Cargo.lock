@@ -149,6 +149,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "blackline"
+version = "2.0.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "eframe",
+ "printpdf",
+ "web-time",
+]
+
+[[package]]
 name = "block"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1526,22 +1537,6 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
-
-[[package]]
-name = "northstar"
-version = "2.0.0"
-dependencies = [
- "chrono",
- "dirs",
- "eframe",
- "printpdf",
- "raw-window-handle",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols-plasma",
- "web-time",
- "x11rb",
-]
 
 [[package]]
 name = "num-conv"

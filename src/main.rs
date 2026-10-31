@@ -1,23 +1,26 @@
-//! Northstar on the desktop — a screenwriting studio for Linux.
+//! Blackline on the desktop — a screenwriting studio.
 //!
 //! Scripts are plain markdown on disk; the editor formats them to standard
-//! master-scene screenplay geometry and exports print-ready PDF. Drawn in the
-//! design language it shares with Tesseract.
+//! master-scene screenplay geometry and exports print-ready PDF. Drawn in
+//! NativeCompute's design language.
 //!
-//! MarkedExiled Software.
+//! NativeCompute.
 
-use northstar::{app, logo, splash, storage, theme};
+// A release build on Windows is a window app, with no console behind it.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
+use blackline::{app, logo, splash, storage, theme};
 
 fn main() -> eframe::Result<()> {
-    // `northstar --emit-icon <path>` writes the mark as an SVG. install.sh uses
+    // `blackline --emit-icon <path>` writes the mark as an SVG. install.sh uses
     // it so the launcher icon is generated from the same code the app draws.
     let args: Vec<String> = std::env::args().collect();
     if let Some(i) = args.iter().position(|a| a == "--emit-icon") {
         let path = args
             .get(i + 1)
             .cloned()
-            .unwrap_or_else(|| "northstar.svg".to_string());
-        theme::set_palette(theme::ThemeId::Bloodmoon, true);
+            .unwrap_or_else(|| "blackline.svg".to_string());
+        theme::set_palette(true);
         match std::fs::write(&path, logo::svg()) {
             Ok(()) => println!("wrote {path}"),
             Err(e) => eprintln!("could not write {path}: {e}"),
@@ -25,7 +28,7 @@ fn main() -> eframe::Result<()> {
         return Ok(());
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("northstar {}", env!("CARGO_PKG_VERSION"));
+        println!("blackline {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
 
@@ -42,10 +45,10 @@ fn main() -> eframe::Result<()> {
     // blur; when none can, the app paints its own opaque ground instead.
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Northstar")
-            .with_app_id("northstar")
+            .with_title("Blackline")
+            .with_app_id("blackline")
             .with_transparent(true)
-            // Northstar draws its own title bar, buttons and resize grips, so
+            // Blackline draws its own title bar, buttons and resize grips, so
             // the desktop's frame would only be a second, uglier one.
             .with_decorations(false)
             .with_drag_and_drop(true)
@@ -64,7 +67,7 @@ fn main() -> eframe::Result<()> {
         .collect();
 
     eframe::run_native(
-        "Northstar",
+        "Blackline",
         options,
         Box::new(move |cc| {
             let mut app = app::App::new(cc);

@@ -1,9 +1,8 @@
-//! Home: the script picker a team library opens on.
+//! Home: the script picker the app opens on, with a library of scripts in it.
 //!
-//! The same islands on the same glass as the rest of the app: a greeting
-//! straight on the glass, the script you were last on as one wide island, and
-//! every other script as a card of its own, with who saved it last and who is
-//! in it now. The desktop never shows it; its library rail does this job.
+//! A greeting, the script you were last on as one wide card, and every other
+//! script as a card of its own. On a team, each card also says who saved it
+//! last and who is in it now.
 
 use std::path::PathBuf;
 
@@ -21,6 +20,8 @@ use crate::ui;
 /// How wide a card wants to be; the grid fills the row with as many as fit.
 const CARD_W: f32 = 268.0;
 const CARD_H: f32 = 132.0;
+/// The continue card's title, in the display face.
+const T_CONTINUE: f32 = 22.0;
 
 impl App {
     /// Back to the picker, letting go of the script that was open.
@@ -77,9 +78,7 @@ impl App {
 
     fn home_body(&mut self, ui: &mut egui::Ui) {
         let p = pal();
-        let Some(team) = self.store.team().cloned() else {
-            return;
-        };
+        let team = self.store.team().cloned();
         let w = ui.available_width();
 
         // ---- the greeting, straight on the glass ----
@@ -87,21 +86,29 @@ impl App {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
+                let hello = match team.as_ref().map(|t| t.me.first_name().to_string()).or_else(local_name) {
+                    Some(name) => format!("{}, {name}", greeting()),
+                    None => greeting().to_string(),
+                };
+                let about = match &team {
+                    Some(team) => {
+                        let people = team.members.iter().filter(|m| !m.pending).count().max(1);
+                        format!(
+                            "{} · {} · {}",
+                            team.name,
+                            plural(self.entries.len(), "script", "scripts"),
+                            plural(people, "person", "people"),
+                        )
+                    }
+                    None => format!("Your library · {}", plural(self.entries.len(), "script", "scripts")),
+                };
+                // the site's hero: a HUD eyebrow, then the words set giant
+                ui::hud(ui, &about.replace(" · ", " / "), None);
+                ui.add_space(6.0);
                 ui.label(
-                    egui::RichText::new(format!("{}, {}", greeting(), team.me.first_name()))
-                        .font(theme::font_semi(theme::T_TITLE))
+                    egui::RichText::new(hello.to_uppercase())
+                        .font(theme::font_display(34.0))
                         .color(p.text),
-                );
-                let people = team.members.iter().filter(|m| !m.pending).count().max(1);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} · {} · {}",
-                        team.name,
-                        plural(self.entries.len(), "script", "scripts"),
-                        plural(people, "person", "people"),
-                    ))
-                    .font(theme::font(theme::T_SM))
-                    .color(p.text_dim),
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -115,7 +122,7 @@ impl App {
                         self.start_import();
                     }
                 }
-                if ui::icon_button(ui, Icon::Trash, "Recently deleted", 30.0) {
+                if team.is_some() && ui::icon_button(ui, Icon::Trash, "Recently deleted", 30.0) {
                     self.toggle_popover(Popover::Trash);
                 }
             });
@@ -126,7 +133,11 @@ impl App {
         let search = ui.add(
             egui::TextEdit::singleline(&mut self.home_search)
                 .id(egui::Id::new("ns-home-search"))
-                .hint_text("Search the team's scripts  ·  Ctrl+F")
+                .hint_text(if team.is_some() {
+                    "Search the team's scripts  ·  Ctrl+F"
+                } else {
+                    "Search your scripts  ·  Ctrl+F"
+                })
                 .desired_width(w.min(380.0))
                 .margin(egui::Margin::symmetric(12.0, 8.0)),
         );
@@ -148,7 +159,7 @@ impl App {
             })
             .cloned()
             .collect();
-        list.sort_by(|a, b| b.modified.cmp(&a.modified));
+        list.sort_by_key(|a| std::cmp::Reverse(a.modified));
 
         if self.entries.is_empty() {
             self.home_empty(ui);
@@ -157,11 +168,14 @@ impl App {
         }
 
         // ---- where you left off ----
-        let me = team.me.clone();
+        let me = team.as_ref().map(|t| t.me.clone());
         if needle.is_empty() {
             let mine = list
                 .iter()
-                .find(|e| e.edited_by.as_ref().map(|b| b.id == me.id).unwrap_or(false))
+                .find(|e| match (&me, &e.edited_by) {
+                    (Some(me), Some(by)) => by.id == me.id,
+                    _ => false,
+                })
                 .or_else(|| list.first())
                 .cloned();
             if let Some(e) = mine {
@@ -178,23 +192,15 @@ impl App {
         let mut menu = None;
         for (label, icon, items) in [
             ("Starred", Icon::StarFilled, &starred),
-            ("Team scripts", Icon::File, &rest),
+            (if team.is_some() { "Team scripts" } else { "Scripts" }, Icon::File, &rest),
         ] {
             if items.is_empty() {
                 continue;
             }
             ui.horizontal(|ui| {
-                icons::show(ui, icon, 13.0, if label == "Starred" { p.warn } else { p.text_faint });
-                ui.label(
-                    egui::RichText::new(label.to_uppercase())
-                        .font(theme::font_semi(theme::T_MICRO))
-                        .color(p.text_faint),
-                );
-                ui.label(
-                    egui::RichText::new(format!("{}", items.len()))
-                        .font(theme::font_mono(theme::T_MICRO))
-                        .color(theme::wash(p.text_faint, 150)),
-                );
+                ui.spacing_mut().item_spacing.x = 8.0;
+                icons::show(ui, icon, 12.0, if label == "Starred" { p.warn } else { p.text_faint });
+                ui::hud(ui, &format!("{label} / {:02}", items.len()), Some(p.text_dim));
             });
             ui.add_space(8.0);
             let gap = theme::GAP;
@@ -254,47 +260,52 @@ impl App {
         let p = pal();
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 98.0), Sense::click());
         let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
-        theme::lift_shadow(ui.painter(), rect, theme::R_ISLAND, 0.35 + 0.65 * hot);
-        ui.painter().rect_filled(
-            rect,
-            egui::Rounding::same(theme::R_ISLAND),
-            theme::mix(p.solid, p.solid_hi, hot),
+        // the site's chosen panel: the light signal blue round it
+        ui.painter().rect_filled(rect, egui::Rounding::same(theme::R_SM), theme::mix(p.solid, p.solid_hi, hot));
+        ui.painter().rect_stroke(
+            rect.shrink(0.5),
+            egui::Rounding::same(theme::R_SM),
+            Stroke::new(1.0_f32, p.primary_light),
         );
-        // the one coloured edge on the screen: where you were
-        let edge = Rect::from_min_size(rect.min + Vec2::new(0.0, 18.0), Vec2::new(3.0, rect.height() - 36.0));
-        theme::grad_rect(ui.painter(), edge, 1.5, p.prim_grad.0, p.prim_grad.1, Vec2::new(0.0, 1.0));
+        theme::top_edge(ui.painter(), rect);
 
         let x = rect.left() + 26.0;
+        ui.painter().rect_filled(
+            Rect::from_center_size(Pos2::new(x + 3.0, rect.top() + 22.0), Vec2::splat(6.0)),
+            egui::Rounding::ZERO,
+            p.primary_light,
+        );
         theme::tracked_text(
             ui.painter(),
-            Pos2::new(x, rect.top() + 22.0),
+            Pos2::new(x + 14.0, rect.top() + 22.0),
             "CONTINUE WRITING",
-            theme::font_semi(theme::T_MICRO),
-            p.text_faint,
-            1.3,
+            theme::font_hud(theme::T_MICRO + 0.5),
+            p.primary_light,
+            0.8,
         );
         ui.painter().text(
-            Pos2::new(x, rect.top() + 46.0),
+            Pos2::new(x, rect.top() + 48.0),
             egui::Align2::LEFT_CENTER,
-            ui::elide(&e.title, ((rect.width() - 220.0) / 9.5) as usize),
-            theme::font_semi(theme::T_H + 3.0),
+            ui::elide(&e.title.to_uppercase(), ((rect.width() - 220.0) / 15.0) as usize),
+            theme::font_display(T_CONTINUE),
             p.text,
         );
         let me = self.me();
         let mut meta = format!(
-            "{} · {}",
+            "{} / {}",
             plural(e.pages, "page", "pages"),
             plural(e.scenes, "scene", "scenes")
         );
         if let Some(by) = &e.edited_by {
-            meta.push_str(&format!(" · saved by {}", people::by_line(by, me.as_ref(), &relative_time(e.modified))));
+            meta.push_str(&format!(" / saved by {}", people::by_line(by, me.as_ref(), &relative_time(e.modified))));
         }
-        ui.painter().text(
-            Pos2::new(x, rect.top() + 72.0),
-            egui::Align2::LEFT_CENTER,
-            meta,
-            theme::font(theme::T_CAP),
-            p.text_dim,
+        theme::tracked_text(
+            ui.painter(),
+            Pos2::new(x, rect.top() + 76.0),
+            &meta.replace(" · ", " / ").to_uppercase(),
+            theme::font_hud(theme::T_MICRO + 0.5),
+            p.text_faint,
+            0.8,
         );
         // on the right: who is in it now, or the way in
         let right = Pos2::new(rect.right() - 24.0, rect.center().y);
@@ -323,18 +334,20 @@ impl App {
         let p = pal();
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, CARD_H), Sense::click());
         let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
-        theme::lift_shadow(ui.painter(), rect, theme::R_ISLAND, 0.25 + 0.75 * hot);
-        ui.painter().rect_filled(
-            rect,
-            egui::Rounding::same(theme::R_ISLAND),
-            theme::mix(p.solid, p.solid_hi, hot),
+        ui.painter().rect_filled(rect, egui::Rounding::same(theme::R_SM), theme::mix(p.solid, p.solid_hi, hot));
+        ui.painter().rect_stroke(
+            rect.shrink(0.5),
+            egui::Rounding::same(theme::R_SM),
+            Stroke::new(1.0_f32, theme::mix(p.line, p.text_faint, hot)),
         );
+        theme::top_edge(ui.painter(), rect);
         if selected {
-            // keyboard focus: a quiet ring, not a light
+            // keyboard focus: the site's focus ring, 2px light signal blue
+            // standing 2px off the card
             ui.painter().rect_stroke(
-                rect.shrink(1.0),
-                egui::Rounding::same(theme::R_ISLAND - 1.0),
-                Stroke::new(1.5_f32, theme::wash(p.primary_light, 150)),
+                rect.expand(3.0),
+                egui::Rounding::same(theme::R_SM),
+                Stroke::new(2.0_f32, p.primary_light),
             );
         }
 
@@ -345,7 +358,7 @@ impl App {
             Pos2::new(x, rect.top() + 24.0),
             egui::Align2::LEFT_CENTER,
             ui::elide(&e.title, chars),
-            theme::font_semi(theme::T_BODY + 0.5),
+            theme::font_bold(theme::T_BODY + 0.5),
             p.text,
         );
         let author = if e.author.trim().is_empty() {
@@ -360,12 +373,13 @@ impl App {
             theme::font(theme::T_CAP),
             p.text_dim,
         );
-        ui.painter().text(
+        theme::tracked_text(
+            ui.painter(),
             Pos2::new(x, rect.top() + 68.0),
-            egui::Align2::LEFT_CENTER,
-            format!("{} pg · {} sc", e.pages, e.scenes),
-            theme::font_mono(theme::T_MICRO),
+            &format!("{:02} pg / {:02} sc", e.pages, e.scenes).to_uppercase(),
+            theme::font_hud(theme::T_MICRO + 0.5),
             p.text_faint,
+            0.8,
         );
 
         // the foot: who saved it last
@@ -449,14 +463,14 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.label(
-                    egui::RichText::new("No scripts yet")
-                        .font(theme::font_semi(theme::T_H + 2.0))
+                    egui::RichText::new("NO SCRIPTS YET")
+                        .font(theme::font_display(26.0))
                         .color(p.text),
                 );
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(if self.can_write() {
-                        "Start one, or bring one in: Fountain, Final Draft and Northstar's own files all import."
+                        "Start one, or bring one in: Fountain, Final Draft and Blackline's own files all import."
                     } else {
                         "When someone on the team starts a script, it shows up here."
                     })
@@ -495,19 +509,17 @@ impl App {
             }
             ui.add_space(10.0);
             let (r, _) = ui.allocate_exact_size(Vec2::new(260.0, 14.0), Sense::hover());
-            let text = "MARKEDEXILED SOFTWARE";
+            let text = "BLACKLINE BY NATIVECOMPUTE";
             // tracked text is drawn from its left edge: centre it by its width
-            let galley = ui
-                .painter()
-                .layout_no_wrap(text.to_string(), theme::font_semi(theme::T_MICRO - 0.5), p.text_faint);
-            let width = galley.rect.width() + 1.4 * (text.chars().count() as f32 - 1.0);
+            let font = theme::font_hud(theme::T_MICRO);
+            let width = theme::tracked_width(ui.ctx(), text, font.clone(), 0.8);
             theme::tracked_text(
                 ui.painter(),
                 Pos2::new(r.center().x - width * 0.5, r.center().y),
                 text,
-                theme::font_semi(theme::T_MICRO - 0.5),
-                theme::wash(p.text_faint, 150),
-                1.4,
+                font,
+                p.text_faint,
+                0.8,
             );
         });
         ui.add_space(12.0);
@@ -587,6 +599,20 @@ fn greeting() -> &'static str {
         18..=22 => "Good evening",
         _ => "Up late",
     }
+}
+
+/// The name to greet you by on the desktop: your account's, first name only.
+fn local_name() -> Option<String> {
+    if crate::WEB {
+        return None;
+    }
+    let raw = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok()?;
+    let first = raw.split(['.', '_', '-', ' ']).next()?.trim();
+    if first.is_empty() || first == "root" || !first.chars().all(|c| c.is_alphabetic()) {
+        return None;
+    }
+    let mut c = first.chars();
+    Some(c.next()?.to_uppercase().collect::<String>() + &c.as_str().to_lowercase())
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {

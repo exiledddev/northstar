@@ -1,6 +1,5 @@
 //! Headless UI tests. egui runs without a window, so these build a real App,
-//! feed it synthetic clicks, drags and keystrokes, and read back what it did —
-//! the same harness Tesseract is tested with.
+//! feed it synthetic clicks, drags and keystrokes, and read back what it did.
 
 use std::time::Duration;
 
@@ -9,7 +8,7 @@ use crate::editor;
 use crate::model::{Document, Element};
 use crate::storage;
 use crate::tests::VAULT;
-use crate::theme::{self, ThemeId};
+use crate::theme;
 use eframe::egui::{self, pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
 static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -24,14 +23,14 @@ struct Harness {
 fn sandbox(settings: &str) -> std::sync::MutexGuard<'static, ()> {
     let guard = VAULT.lock().unwrap_or_else(|e| e.into_inner());
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("northstar-ui-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("blackline-ui-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(dir.join("northstar"));
+    let _ = std::fs::create_dir_all(dir.join("blackline"));
     std::env::set_var("XDG_DATA_HOME", &dir);
     // No splash and no easing, so a frame is a frame.
     let _ = std::fs::write(
-        dir.join("northstar/settings.conf"),
-        format!("splash = no\nanimations = no\nmatch_tesseract = no\nautosave_ms = 150\n{settings}"),
+        dir.join("blackline/settings.conf"),
+        format!("splash = no\nanimations = no\nautosave_ms = 150\n{settings}"),
     );
     guard
 }
@@ -568,38 +567,16 @@ fn the_settings_panel_opens_from_the_ribbon() {
 }
 
 #[test]
-fn northstar_follows_tesseract_s_theme_live() {
-    let mut h = Harness::with(1320.0, 900.0, "match_tesseract = yes\n");
-    let tess = storage::tesseract_settings_path();
-    std::fs::create_dir_all(tess.parent().unwrap()).unwrap();
-    std::fs::write(&tess, "theme = void\nlight_mode = yes\n").unwrap();
-    // it looks again every second and a half
-    std::thread::sleep(Duration::from_millis(1600));
-    h.frames(2);
-    assert_eq!(theme::pal().id, ThemeId::Void);
-    assert!(!theme::pal().dark);
-    // Tesseract changes its mind; Northstar follows
-    std::thread::sleep(Duration::from_millis(1100));
-    std::fs::write(&tess, "theme = ember\nlight_mode = no\n").unwrap();
-    std::thread::sleep(Duration::from_millis(1600));
-    h.frames(2);
-    assert_eq!(theme::pal().id, ThemeId::Ember);
-    assert!(theme::pal().dark);
-}
-
-#[test]
-fn every_theme_paints_every_view_without_panicking() {
+fn both_casts_paint_every_view_without_panicking() {
     let mut h = Harness::new();
     h.load(three_scenes());
-    for t in ThemeId::ALL {
-        for light in [false, true] {
-            h.app.debug_set_theme(t, light);
-            for m in [Mode::Write, Mode::Cards, Mode::Read] {
-                h.app.set_mode(m);
-                h.frames(2);
-            }
-            assert_eq!(theme::pal().id, t);
+    for light in [false, true] {
+        h.app.debug_set_light(light);
+        for m in [Mode::Write, Mode::Cards, Mode::Read] {
+            h.app.set_mode(m);
+            h.frames(2);
         }
+        assert_eq!(theme::pal().dark, !light);
     }
 }
 
@@ -655,9 +632,9 @@ fn the_library_foot_ends_level_with_the_other_islands() {
     );
     let aside = h.app.debug_aside_rect();
     assert!((aside.bottom() - page.bottom()).abs() < 1.5);
-    h.app.debug_set_theme(ThemeId::JetBrains, false);
+    h.app.debug_set_light(true);
     h.frames(2);
-    assert_eq!(theme::pal().id, ThemeId::JetBrains);
+    assert!(!theme::pal().dark);
 }
 
 #[test]
@@ -863,14 +840,20 @@ fn the_export_window_exports_the_pages_asked_for() {
 }
 
 #[test]
-fn the_desktop_makes_no_acts_and_ctrl_shift_enter_is_still_a_new_scene() {
+fn the_desktop_makes_acts_as_the_web_does() {
     let mut h = Harness::new();
     h.load(three_scenes());
     let in_first = h.app.doc().blocks[2].id;
     h.focus(in_first);
     h.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
-    assert!(h.app.doc().acts().is_empty(), "acts are made on a team library only, for now");
-    assert_eq!(h.app.doc().scenes().len(), 4, "the chord does what it always did");
+    let acts: Vec<String> = h.app.doc().acts().iter().map(|a| a.title.clone()).collect();
+    assert_eq!(acts, ["ACT ONE"]);
+    assert_eq!(h.app.doc().scenes().len(), 3, "no scene was made or lost");
+    // and it reaches the file as a level-one heading
+    h.app.debug_save();
+    let path = h.app.path().unwrap();
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("\n# ACT ONE\n"), "{text}");
 }
 
 #[test]
@@ -901,18 +884,24 @@ fn a_script_with_acts_shows_them_everywhere_on_the_desktop_too() {
 }
 
 #[test]
-fn the_desktop_offers_no_colour_picker() {
+fn the_desktop_chooses_character_colours_as_the_web_does() {
     let mut h = Harness::with(1320.0, 900.0, "character_colors = yes\nshow_cast = yes\n");
-    let mut d = three_scenes();
-    d.meta.set_voice("DETECTIVE COLE", Some(200));
-    h.load(d);
+    h.load(three_scenes());
     h.app.debug_open_voice_picker("DETECTIVE COLE");
     h.frames(2);
-    assert!(!h.app.debug_voice_picker_open(), "choosing colours is the team edition's, for now");
-    // a colour chosen on the web only shows once Custom is on
+    assert!(h.app.debug_voice_picker_open());
+    h.app.debug_set_voice("DETECTIVE COLE", Some(200));
+    h.frames(2);
+    assert!(h.app.settings().custom_colors, "choosing a colour turns Custom on");
     let voices = h.app.debug_voices().unwrap();
-    assert_eq!(voices["DETECTIVE COLE"], crate::theme::character_colors(&["DETECTIVE COLE".to_string()], 0)["DETECTIVE COLE"]);
-    h.app.debug_open_settings(2);
-    h.frames(3);
-    assert!(!h.app.settings().custom_colors);
+    assert_eq!(voices["DETECTIVE COLE"], crate::theme::voice_of_hue(200));
+    h.app.debug_save();
+    let text = std::fs::read_to_string(h.app.path().unwrap()).unwrap();
+    assert!(text.contains("voices: DETECTIVE COLE=200"), "{text}");
+    // the Colour and Keyboard tabs are there
+    for tab in [2, 8] {
+        h.app.debug_open_settings(tab);
+        h.frames(3);
+        assert_eq!(h.app.debug_settings_tab(), tab);
+    }
 }

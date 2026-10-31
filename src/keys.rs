@@ -1,7 +1,7 @@
 //! Keyboard shortcuts, and the ones you choose instead.
 //!
 //! Every command the app's shortcuts reach has its default chords here — the
-//! ones Northstar has always had — and a person can give any of them a chord
+//! ones Blackline has always had — and a person can give any of them a chord
 //! of their own. Only what differs from the defaults is kept, in their
 //! settings: on the web those are their account's, so the keys follow them to
 //! any browser. Writing keys (Enter, Tab, Backspace, Alt+arrows in the
@@ -133,7 +133,8 @@ impl Command {
     }
 
     /// The chords it has always had. A browser keeps Ctrl+N and Ctrl+1–7 for
-    /// itself, so the web build has Ctrl+Alt+N and Alt+1–7 as well.
+    /// itself, so Ctrl+Alt+N and Alt+1–7 do the same everywhere; in a browser
+    /// they are the ones shown first.
     pub fn defaults(self, web: bool) -> Vec<KeyboardShortcut> {
         let c = |m: Modifiers, k: Key| KeyboardShortcut::new(m, k);
         let cmd = Modifiers::COMMAND;
@@ -141,7 +142,7 @@ impl Command {
         match self {
             Save => vec![c(cmd, Key::S)],
             NewScript if web => vec![c(cmd | Modifiers::ALT, Key::N), c(cmd, Key::N)],
-            NewScript => vec![c(cmd, Key::N)],
+            NewScript => vec![c(cmd, Key::N), c(cmd | Modifiers::ALT, Key::N)],
             NewScene => vec![c(cmd, Key::Enter)],
             NewAct => vec![c(cmd_shift, Key::Enter)],
             Undo => vec![c(cmd, Key::Z)],
@@ -163,7 +164,7 @@ impl Command {
                 if web {
                     vec![c(Modifiers::ALT, k), c(cmd, k)]
                 } else {
-                    vec![c(cmd, k)]
+                    vec![c(cmd, k), c(Modifiers::ALT, k)]
                 }
             }
         }

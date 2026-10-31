@@ -9,12 +9,12 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use northstar::app::App;
-use northstar::backend::{Access, EditSession, Event, Load, Member, Person, Role, Store, Team};
-use northstar::eframe::{self, egui};
-use northstar::model::{Document, Element};
-use northstar::settings::{AfterExport, Settings};
-use northstar::storage::{Entry, Snapshot};
+use blackline::app::App;
+use blackline::backend::{Access, EditSession, Event, Load, Member, Person, Role, Store, Team};
+use blackline::eframe::{self, egui};
+use blackline::model::{Document, Element};
+use blackline::settings::{AfterExport, Settings};
+use blackline::storage::{Entry, Snapshot};
 use web_time::{Duration, SystemTime};
 
 /// A script in the demo: where, what, saved by, being edited by, how long ago.
@@ -44,9 +44,9 @@ fn face(hue: f32) -> egui::ColorImage {
             let (fx, fy) = (x as f32 / n as f32, y as f32 / n as f32);
             let head = ((fx - 0.5).powi(2) + (fy - 0.40).powi(2)).sqrt() < 0.17;
             let body = ((fx - 0.5).powi(2) + (fy - 0.98).powi(2)).sqrt() < 0.40;
-            let base = northstar::theme::hsl(hue, 0.45, 0.46 + 0.08 * fy);
+            let base = blackline::theme::hsl(hue, 0.45, 0.46 + 0.08 * fy);
             px.push(if head || body {
-                northstar::theme::hsl(hue, 0.25, 0.86)
+                blackline::theme::hsl(hue, 0.25, 0.86)
             } else {
                 base
             });
@@ -195,7 +195,7 @@ fn main() -> eframe::Result<()> {
     let alex = person("222222222222222222", "Alex Reyes", 0.95);
     let june = person("333333333333333333", "June Park", 0.32);
     let team = Team {
-        name: "MarkedExiled Software".into(),
+        name: "NativeCompute".into(),
         me: sam.clone(),
         role,
         members: vec![
@@ -279,12 +279,12 @@ fn main() -> eframe::Result<()> {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("Northstar — team demo")
+            .with_title("Blackline — team demo")
             .with_inner_size([1320.0, 900.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "Northstar team demo",
+        "Blackline team demo",
         options,
         Box::new(move |cc| Ok(Box::new(App::with_store(&cc.egui_ctx, Box::new(demo))))),
     )

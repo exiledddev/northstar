@@ -15,7 +15,6 @@ use crate::backend::{Access, EditSession, Event, Load, Member, Person, Role, Sto
 use crate::model::{Document, Element};
 use crate::settings::{AfterExport, Settings};
 use crate::storage::{self, Entry, Snapshot};
-use crate::theme::ThemeId;
 
 /// What the stand-in store remembers, shared with the test.
 #[derive(Default)]
@@ -165,7 +164,7 @@ impl Store for Memory {
         self.shared.borrow_mut().signed_out = true;
     }
     fn read_settings(&mut self) -> Settings {
-        Settings::parse("splash = no\nanimations = no\nmatch_tesseract = no\nautosave_ms = 150\n")
+        Settings::parse("splash = no\nanimations = no\nautosave_ms = 150\n")
     }
     fn write_settings(&mut self, s: &Settings) -> Result<(), String> {
         self.shared.borrow_mut().settings = Some(s.serialize());
@@ -212,7 +211,7 @@ impl Team1 {
         }
         let me = sam();
         let team = Team {
-            name: "MarkedExiled Software".into(),
+            name: "NativeCompute".into(),
             me: me.clone(),
             role,
             members: vec![
@@ -417,11 +416,11 @@ fn a_viewer_reads_and_writes_nothing() {
 }
 
 #[test]
-fn every_team_panel_draws_in_every_theme() {
+fn every_team_panel_draws_in_both_casts() {
     let mut t = Team1::new(Role::Owner);
-    for theme in ThemeId::ALL {
+    {
         for light in [false, true] {
-            t.app.debug_set_theme(theme, light);
+            t.app.debug_set_light(light);
             t.app.debug_go_home();
             t.frames(3);
             t.app.debug_open_settings(7);
@@ -439,7 +438,34 @@ fn every_team_panel_draws_in_every_theme() {
 }
 
 #[test]
-fn the_desktop_has_no_team_and_no_picker() {
+fn the_desktop_opens_on_its_picker_once_it_has_scripts() {
+    let _g = crate::tests::sandbox("desk-home");
+    // a library with scripts in it opens on Home, and opens nothing
+    let lib = storage::scripts_dir();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("pilot.md"), storage::to_markdown(&script("Pilot", "Phones ring."))).unwrap();
+    let before = std::fs::read(lib.join("pilot.md")).unwrap();
+    let ctx = egui::Context::default();
+    let _ = ctx.run(screen(), |_| {});
+    let mut app = App::with_context(&ctx);
+    assert!(app.is_home());
+    assert!(app.path().is_none());
+    for _ in 0..3 {
+        let _ = ctx.run(screen(), |c| app.frame(c));
+    }
+    assert_eq!(app.debug_home_order(), vec![lib.join("pilot.md")]);
+    app.debug_open_from_home(lib.join("pilot.md"));
+    let _ = ctx.run(screen(), |c| app.frame(c));
+    assert!(!app.is_home());
+    assert_eq!(app.doc().meta.title, "Pilot");
+    app.debug_go_home();
+    let _ = ctx.run(screen(), |c| app.frame(c));
+    assert!(app.is_home());
+    assert_eq!(std::fs::read(lib.join("pilot.md")).unwrap(), before, "looking is not writing");
+}
+
+#[test]
+fn the_desktop_has_no_team_and_a_first_run_goes_straight_to_writing() {
     let _g = crate::tests::sandbox("no-team");
     let ctx = egui::Context::default();
     let _ = ctx.run(screen(), |_| {});
@@ -696,7 +722,7 @@ fn a_shortcut_of_your_own_is_kept_and_reset_puts_back_the_default() {
     assert!(t.app.debug_settings_open());
     assert_eq!(t.app.settings().keys.label(Command::Save, false), "Ctrl+S");
 
-    // Reset all: Northstar's own again
+    // Reset all: Blackline's own again
     t.app.settings_mut().keys.reset_all();
     t.frames(2);
     assert!(t.app.settings().keys.is_default());
