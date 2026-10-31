@@ -6,16 +6,14 @@
 //! every mutation out of the render pass, which is what stops the borrow
 //! checker and the layout from fighting each other.
 //!
-//! The look follows the design language Tesseract set down: the
-//! page is the island itself, so nothing here draws a box. The block you are
-//! in gets a wash of the accent that fades away to the right; a scene heading
-//! carries a four-pointed star in the gutter — Blackline's marker, standing
-//! where Tesseract has its rhombus — that lights while you are in its scene;
-//! and where a printed page will break, a rule fades in and out of nothing.
+//! The look follows NativeCompute's design language: the page is the panel
+//! itself, so nothing here draws a box. The block you are in gets a wash of
+//! the accent that fades away to the right; a scene heading carries a small
+//! square in the gutter that goes signal blue while you are in its scene; and
+//! where a printed page will break, a hairline marks it.
 //!
-//! An act is drawn as a wide divider across the page: a faint aurora in the
-//! theme's two gradients, a constellation of its own, the mark, and the act's
-//! title set large and tracked between two horizon lines.
+//! An act is drawn as one of the site's chapter headings: a hairline, a mono
+//! readout of what the act holds, and its title set giant in the display face.
 
 use std::collections::HashMap;
 
@@ -23,7 +21,6 @@ use eframe::egui::{self, text::CCursor, Key, Modifiers, Pos2, Rect, Sense, Vec2}
 
 use crate::anim;
 use crate::caret;
-use crate::logo;
 use crate::model::{act_title, base_character, complete, guess_element, Document, Element, PAGE_COLS};
 use crate::theme::{self, pal};
 
@@ -32,7 +29,7 @@ pub const GUTTER: f32 = 74.0;
 /// Where the scene star sits, from the column's left edge.
 const STAR_X: f32 = 26.0;
 /// How tall an act's divider stands.
-const ACT_H: f32 = 124.0;
+const ACT_H: f32 = 118.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Caret {
@@ -670,14 +667,14 @@ pub fn act_notes(doc: &Document, page_starts: &HashMap<u64, usize>, pages: usize
             None => pages.max(from),
         };
         let pages = if to > from {
-            format!("pages {from}\u{2013}{to}")
+            format!("pp {from}\u{2013}{to}")
         } else {
             format!("page {from}")
         };
         out.insert(
             a.id,
             format!(
-                "Act {} \u{b7} {} scene{} \u{b7} {pages}",
+                "Act {:02} \u{2014} {} scene{} \u{2014} {pages}",
                 a.number,
                 scenes,
                 if scenes == 1 { "" } else { "s" }
@@ -687,26 +684,9 @@ pub fn act_notes(doc: &Document, page_starts: &HashMap<u64, usize>, pages: usize
     out
 }
 
-/// A small, stable source of numbers for one act's constellation, so each
-/// act keeps its own pattern from frame to frame and run to run.
-struct Seeded(u64);
-
-impl Seeded {
-    fn next(&mut self) -> f32 {
-        // splitmix64
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        (z >> 40) as f32 / (1u64 << 24) as f32
-    }
-}
-
-/// An act: a divider across the page that says a new act starts here, and
-/// that its title is still just text you can write in. Everything is drawn
-/// from the palette, so it belongs to whichever theme is on; it brightens a
-/// little, and its stars twinkle, only while the caret is in it.
+/// An act: the site's "chapter" heading across the page. A hairline, a HUD
+/// readout of what the act holds, then the act's title set giant in the
+/// display face — still just text you can write in.
 #[allow(clippy::too_many_arguments)]
 fn act_row(
     ui: &mut egui::Ui,
@@ -724,8 +704,8 @@ fn act_row(
     let bid = doc.blocks[i].id;
     let number = doc.blocks[..=i].iter().filter(|b| b.element == Element::Act).count();
 
-    // springs open like any new block
-    let grow = if raw < 0.999 { anim::bounce(raw).max(0.0) } else { 1.0 };
+    // opens like any new block, without the spring
+    let grow = if raw < 0.999 { anim::ease_out_expo(raw).max(0.0) } else { 1.0 };
     let (slot, _) = ui.allocate_exact_size(Vec2::new(col.width(), ACT_H * grow), Sense::hover());
     let band = Rect::from_min_size(slot.min, Vec2::new(col.width(), ACT_H));
     let clip = slot.intersect(ui.clip_rect());
@@ -734,150 +714,81 @@ fn act_row(
         anim::keep_going(&ctx);
     }
 
-    let lit = anim::ease(&ctx, ("ns-act", bid), focused, 0.30);
-    let alive = focused && anim::enabled();
-    let t = if alive {
-        anim::keep_going(&ctx);
-        anim::clock(&ctx)
-    } else {
-        0.0
-    };
+    let lit = anim::ease(&ctx, ("ns-act", bid), focused, 0.15);
     let a = |c: egui::Color32, k: f32| theme::wash(c, (c.a() as f32 * k * fade).clamp(0.0, 255.0) as u8);
 
-    // everything is centred on the page column, not the gutter
+    // the page column the title sits on
     let char_w = (col.width() - GUTTER - 28.0) / PAGE_COLS as f32;
-    let cx = col.left() + GUTTER + char_w * PAGE_COLS as f32 * 0.5;
-    let half = (char_w * PAGE_COLS as f32 * 0.5 + 26.0).min(cx - col.left() - 4.0);
-    let title_y = band.top() + 70.0;
+    let left = col.left() + GUTTER;
+    let title_w = char_w * PAGE_COLS as f32;
+    let right = (left + title_w).min(col.right() - 4.0);
 
-    // ---- the aurora: the theme's two gradients, a whisper, faded at every
-    // edge so it has no outline ----
-    {
-        let cols = 9usize;
-        let rows = [0.0f32, 0.5, 1.0];
-        let top = band.top() + 8.0;
-        let bottom = band.bottom() - 6.0;
-        let strength = (if p.dark { 0.085 } else { 0.07 }) * (0.8 + 0.45 * lit) * fade;
-        let mut mesh = egui::Mesh::default();
-        for (r, v) in rows.iter().enumerate() {
-            for c in 0..cols {
-                let u = c as f32 / (cols - 1) as f32;
-                let x = cx - half + u * half * 2.0;
-                let y = top + v * (bottom - top);
-                // primary on the left, secondary on the right, through both
-                let hue = if u < 0.5 {
-                    theme::mix(p.prim_grad.0, p.prim_grad.1, u * 2.0)
-                } else {
-                    theme::mix(p.sec_grad.0, p.sec_grad.1, (u - 0.5) * 2.0)
-                };
-                let across = (std::f32::consts::PI * u).sin().powf(1.6);
-                let down = if r == 1 { 1.0 } else { 0.0 };
-                mesh.colored_vertex(Pos2::new(x, y), theme::tint(hue, strength * across * down));
-            }
-        }
-        for r in 0..rows.len() - 1 {
-            for c in 0..cols - 1 {
-                let k = (r * cols + c) as u32;
-                let below = k + cols as u32;
-                mesh.add_triangle(k, k + 1, below);
-                mesh.add_triangle(k + 1, below + 1, below);
-            }
-        }
-        painter.add(egui::Shape::mesh(mesh));
-    }
+    // ---- the rule over the chapter ----
+    let rule_y = band.top() + 14.5;
+    painter.line_segment(
+        [Pos2::new(col.left() + 8.0, rule_y), Pos2::new(right, rule_y)],
+        egui::Stroke::new(1.0_f32, a(theme::mix(p.line_strong, p.primary_light, lit), 1.0)),
+    );
 
-    // ---- its constellation: 7 to 9 stars either side of the title, joined
-    // the way a star chart joins them ----
-    {
-        let mut rng = Seeded(bid.wrapping_mul(0x2545_F491_4F6C_DD1D) ^ 0xA076_1D64_78BD_642F);
-        let n = 7 + (rng.next() * 3.0) as usize;
-        let keep_clear = 128.0;
-        let top = band.top() + 18.0;
-        let bottom = band.bottom() - 18.0;
-        let mut sides: [Vec<(Pos2, f32, f32)>; 2] = [Vec::new(), Vec::new()];
-        for k in 0..n {
-            let side = k % 2;
-            let u = 0.06 + rng.next() * 0.88;
-            let mut v = rng.next();
-            // off the horizon line
-            if (v - 0.5).abs() < 0.12 {
-                v = if v < 0.5 { 0.3 } else { 0.7 };
-            }
-            let span = (half - keep_clear).max(20.0);
-            let x = if side == 0 {
-                cx - keep_clear - u * span
-            } else {
-                cx + keep_clear + u * span
-            };
-            let y = top + v * (bottom - top);
-            let size = 0.8 + rng.next() * 1.3;
-            let phase = rng.next() * std::f32::consts::TAU;
-            sides[side].push((Pos2::new(x, y), size, phase));
-        }
-        let base = if p.dark { 30.0 } else { 70.0 };
-        let line = theme::wash(theme::mix(p.text_faint, p.primary_light, 0.5), ((base + 26.0 * lit) * fade) as u8);
-        for stars in &mut sides {
-            stars.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
-            for w in stars.windows(2) {
-                painter.line_segment([w[0].0, w[1].0], egui::Stroke::new(0.5_f32, line));
-            }
-        }
-        let star_ink = theme::mix(p.text, p.primary_light, 0.3);
-        for (k, (c, size, phase)) in sides.iter().flatten().enumerate() {
-            let twinkle = if alive { 0.72 + 0.28 * (t * 1.7 + phase).sin() } else { 1.0 };
-            let alpha = (140.0 + 90.0 * lit) * twinkle;
-            if *size > 1.75 || k == 0 {
-                // the brightest: a tiny star of the mark's own shape
-                theme::grad_star(
-                    &painter,
-                    *c,
-                    size * 2.2,
-                    a(theme::wash(p.sec_grad.0, alpha as u8), 1.0),
-                    a(theme::wash(theme::lighten(p.sec_grad.1, 0.3), alpha as u8), 1.0),
-                );
-            } else {
-                painter.circle_filled(*c, *size * 0.75, a(theme::wash(star_ink, alpha as u8), 1.0));
-            }
-        }
-    }
-
-    // ---- the mark, with one soft focal glow ----
-    let mark = Rect::from_center_size(Pos2::new(cx, band.top() + 32.0), Vec2::splat(24.0 + 2.0 * lit));
-    if fade > 0.9 {
-        logo::paint(&painter, mark, 0.10 + 0.16 * lit);
+    // ---- the readout: a signal square, then what the act holds ----
+    let hud_y = band.top() + 32.0;
+    let readout = if note.is_empty() {
+        format!("Act {number:02}")
     } else {
-        logo::paint(&painter, mark, 0.0);
-    }
+        note.to_string()
+    };
+    painter.rect_filled(
+        Rect::from_center_size(Pos2::new(left + 3.0, hud_y), Vec2::splat(6.0)),
+        egui::Rounding::ZERO,
+        a(theme::mix(p.text_faint, p.primary_light, 0.6 + 0.4 * lit), 1.0),
+    );
+    theme::tracked_text(
+        &painter,
+        Pos2::new(left + 14.0, hud_y),
+        &readout.to_uppercase(),
+        theme::font_hud(theme::T_MICRO + 0.5),
+        a(theme::mix(p.text_faint, p.text_dim, lit), 1.0),
+        0.8,
+    );
 
-    // ---- the title: still just text, set large and tracked ----
-    let font = theme::font_semi(22.0);
-    let track = 3.4;
+    // ---- the title: still just text, set giant ----
+    let font = theme::font_display(36.0);
     let ink = a(p.text, 1.0);
-    let tracked = |text: &str, color: egui::Color32, wrap: f32| {
-        let mut job = egui::text::LayoutJob::default();
-        job.append(
-            text,
-            0.0,
+    // uppercase for show, one character for one, so the caret still lands
+    // where the text says it does
+    let shout = |text: &str| -> String {
+        text.chars()
+            .map(|c| {
+                let mut up = c.to_uppercase();
+                match (up.next(), up.next()) {
+                    (Some(u), None) => u,
+                    _ => c,
+                }
+            })
+            .collect()
+    };
+    let job = |text: &str, color: egui::Color32, wrap: f32| {
+        let mut job = egui::text::LayoutJob::single_section(
+            shout(text),
             egui::TextFormat {
                 font_id: font.clone(),
                 color,
-                extra_letter_spacing: track,
+                extra_letter_spacing: -0.5,
                 ..Default::default()
             },
         );
         job.wrap.max_width = wrap;
         job
     };
-    let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| ui.fonts(|f| f.layout_job(tracked(text, ink, wrap)));
-    let title_w = char_w * PAGE_COLS as f32;
-    let title_rect = Rect::from_center_size(Pos2::new(cx, title_y), Vec2::new(title_w, 32.0));
+    let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| ui.fonts(|f| f.layout_job(job(text, ink, wrap)));
+    let title_rect = Rect::from_min_size(Pos2::new(left, band.top() + 46.0), Vec2::new(title_w, 46.0));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(title_rect)
-            .layout(egui::Layout::top_down(egui::Align::Center)),
+            .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     child.set_clip_rect(clip);
-    let hint = tracked(&act_title(number), theme::wash(p.text_faint, (150.0 * fade) as u8), title_w);
+    let hint = job(&act_title(number), theme::wash(p.text_faint, (150.0 * fade) as u8), title_w);
     let output = egui::TextEdit::multiline(&mut doc.blocks[i].text)
         .id(id)
         .font(font.clone())
@@ -886,102 +797,33 @@ fn act_row(
         .frame(false)
         .margin(egui::Margin::symmetric(0.0, 1.0))
         .lock_focus(false)
-        .horizontal_align(egui::Align::Center)
         .layouter(&mut layouter)
         .hint_text(egui::WidgetText::LayoutJob(hint))
         .show(&mut child);
 
-    // ---- the horizon: hairlines running out from the title, fading ----
-    let words = if doc.blocks[i].text.is_empty() {
-        let g = ctx.fonts(|f| f.layout_job(tracked(&act_title(number), ink, title_w)));
-        g.rect.width()
-    } else {
-        output.galley.rect.width()
-    };
-    let gap = words * 0.5 + 20.0;
-    let reach = (half - gap).max(0.0);
-    let hz = theme::wash(theme::mix(p.text_faint, p.primary_light, 0.35 + 0.3 * lit), ((120.0 + 60.0 * lit) * fade) as u8);
-    for dir in [-1.0f32, 1.0] {
-        let near = cx + dir * gap;
-        let far = cx + dir * (gap + reach);
-        let (l, r, cl, cr) = if dir < 0.0 {
-            (far, near, theme::wash(hz, 0), hz)
-        } else {
-            (near, far, hz, theme::wash(hz, 0))
-        };
-        theme::fill_grad_poly(
-            &painter,
-            &[
-                Pos2::new(l, title_y - 0.5),
-                Pos2::new(r, title_y - 0.5),
-                Pos2::new(r, title_y + 0.5),
-                Pos2::new(l, title_y + 0.5),
-            ],
-            cl,
-            cr,
-            Vec2::new(1.0, 0.0),
-        );
-        // a bead where each line leaves the title
-        painter.circle_filled(Pos2::new(near, title_y), 1.4, hz);
-    }
-
-    // ---- what it holds ----
-    if !note.is_empty() {
-        painter.text(
-            Pos2::new(cx, title_y + 28.0),
-            egui::Align2::CENTER_CENTER,
-            note,
-            theme::font(theme::T_CAP),
-            a(p.text_faint, 1.0),
-        );
-    }
+    // ---- a quiet rule under it ----
+    let under = band.bottom() - 14.5;
+    painter.line_segment(
+        [Pos2::new(left, under), Pos2::new(right, under)],
+        egui::Stroke::new(1.0_f32, a(p.line, 1.0)),
+    );
 
     output
 }
 
-/// The star in a scene heading's gutter: Blackline's marker, drawn and lit
-/// the way Tesseract draws its rhombus — a gradient shape with a bloom the
-/// shape of itself and a bright core, lifting when you are in its scene.
+/// The marker in a scene heading's gutter: the site's small signal square —
+/// the one it puts before the page you are on — full blue while you are in
+/// its scene, a quiet outline otherwise.
 fn scene_star(ui: &egui::Ui, c: Pos2, bid: u64, live: bool, dimmed: bool) {
     let p = pal();
-    let lit = anim::ease(ui.ctx(), ("ns-star", bid), live, 0.26);
-    let breath = if live {
-        0.62 + 0.38 * anim::breathe(ui.ctx(), 2.8)
-    } else {
-        0.0
-    };
-    if live {
-        anim::keep_going(ui.ctx());
-    }
+    let lit = anim::ease(ui.ctx(), ("ns-star", bid), live, 0.15);
     let fade = if dimmed { 0.35 } else { 1.0 };
-    // seated in a glass orb, as Tesseract's markers are: a soft pane and two
-    // opposite quarters of its rim, fading out at their ends
-    let orb_r = 14.0;
-    ui.painter()
-        .circle_filled(c, orb_r, theme::wash(p.glass, (175.0 * fade) as u8));
-    let edge = theme::wash(p.glass_edge, (120.0 * fade) as u8);
-    let pi = std::f32::consts::PI;
-    theme::fading_arc(ui.painter(), c, orb_r - 0.6, 0.72 * pi, 1.28 * pi, 1.3, edge);
-    theme::fading_arc(ui.painter(), c, orb_r - 0.6, -0.28 * pi, 0.28 * pi, 1.3, edge);
-    let r = 8.6 * (1.0 + 0.14 * lit);
-    let a = theme::wash(p.sec_grad.0, (255.0 * fade) as u8);
-    let b = theme::wash(
-        theme::mix(p.sec_grad.1, theme::lighten(p.sec_grad.1, 0.18), lit),
-        (255.0 * fade) as u8,
-    );
-    // Only the scene you are in is lit, and only faintly: a halo on every
-    // heading would sit in the margin competing with the words.
-    if lit > 0.01 {
-        theme::glow_star(ui.painter(), c, r * 0.9, b, orb_r * 1.6, 0.16 * lit * breath.max(0.7) * fade);
-    }
-    theme::grad_star(ui.painter(), c, r, a, b);
-    // the bright core that makes the star brighter than its own halo
-    theme::grad_star(
-        ui.painter(),
-        c,
-        r * 0.34,
-        theme::lighten(b, 0.30 + 0.30 * lit),
-        theme::lighten(b, 0.50 + 0.30 * lit),
+    let side = 8.0;
+    let r = Rect::from_center_size(c, Vec2::splat(side));
+    ui.painter().rect_filled(
+        r,
+        egui::Rounding::ZERO,
+        theme::wash(theme::mix(p.text_faint, p.primary_light, lit), (255.0 * fade) as u8),
     );
 }
 

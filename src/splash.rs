@@ -59,91 +59,65 @@ impl Splash {
                 let painter = ui.painter();
                 let round = egui::Rounding::same(theme::R_WINDOW);
 
-                // the card is the window
-                painter.rect_filled(rect, round, theme::wash(p.sunken, (255.0 * alpha) as u8));
-                // a wash of the theme sweeping up from the bottom-left corner,
-                // in the spirit of the ribbons JetBrains puts on theirs
-                theme::fill_grad_poly(
-                    painter,
-                    &theme::rounded_poly(rect, theme::R_WINDOW),
-                    theme::wash(p.prim_grad.0, (105.0 * alpha) as u8),
-                    theme::wash(p.sec_grad.0, 0),
-                    Vec2::new(-0.75, 1.0),
-                );
+                // the card is the window: void, with the site's column guides
+                painter.rect_filled(rect, round, theme::wash(p.backdrop, (255.0 * alpha) as u8));
+                if alpha > 0.99 {
+                    crate::chrome::column_guides(painter, rect);
+                }
                 painter.rect_stroke(
                     rect.shrink(0.5),
                     round,
-                    egui::Stroke::new(1.0_f32, theme::wash(p.text, (34.0 * alpha) as u8)),
+                    egui::Stroke::new(1.0_f32, theme::wash(p.line_strong, (p.line_strong.a() as f32 * alpha) as u8)),
                 );
 
-                let ink = |c: egui::Color32, k: f32| theme::wash(c, (255.0 * alpha * k) as u8);
+                let ink = |c: egui::Color32, k: f32| theme::wash(c, (c.a() as f32 * alpha * k) as u8);
                 let arrive = anim::ease_out_expo((t / 0.55).clamp(0.0, 1.0));
                 let drift = (1.0 - arrive) * 10.0;
+                let left = rect.left() + 40.0;
+                let width = rect.width() - 80.0;
 
-                // the mark, top left, glowing
-                let mark = Rect::from_center_size(
-                    Pos2::new(rect.left() + 70.0, rect.top() + 74.0),
-                    Vec2::splat(52.0),
-                );
-                // kept clear of the corner, or the bloom spills past the card
-                theme::glow_circle(
-                    painter,
-                    mark.center(),
-                    13.0,
-                    p.sec_grad.1,
-                    44.0,
-                    // the card's one focal point: soft, and still
-                    0.22 * alpha,
-                );
+                // the eyebrow: the mark, then a HUD line
+                let mark = Rect::from_min_size(Pos2::new(left, rect.top() + 36.0), Vec2::splat(22.0));
                 logo::paint(painter, mark, 0.0);
-
-                // the name, set large and tracked, the way a product name is
                 theme::tracked_text(
                     painter,
-                    Pos2::new(rect.left() + 112.0 + drift, rect.top() + 64.0),
-                    "BLACKLINE",
-                    theme::font_bold(30.0),
-                    ink(p.text, 1.0),
-                    2.2,
-                );
-                painter.text(
-                    Pos2::new(rect.left() + 114.0 + drift, rect.top() + 90.0),
-                    egui::Align2::LEFT_CENTER,
-                    concat!("v", env!("CARGO_PKG_VERSION")),
-                    theme::font_mono(theme::T_CAP),
-                    ink(p.sec_light, 1.0),
-                );
-
-                painter.text(
-                    Pos2::new(rect.left() + 40.0, rect.top() + 138.0),
-                    egui::Align2::LEFT_CENTER,
-                    "Screenwriting, in industry format",
-                    theme::font(theme::T_BODY + 1.0),
+                    Pos2::new(left + 32.0, mark.center().y),
+                    concat!("V", env!("CARGO_PKG_VERSION"), " / SCREENWRITING IN INDUSTRY FORMAT"),
+                    theme::font_hud(theme::T_MICRO + 0.5),
                     ink(p.text_dim, 1.0),
+                    0.8,
                 );
 
-                // a hairline, then the foot
+                // the name, set giant across the card, the way the site sets
+                // its page titles
+                let probe = painter.layout_no_wrap("BLACKLINE".into(), theme::font_display(100.0), p.text);
+                let size = 100.0 * width / probe.rect.width().max(1.0);
+                let name = painter.layout_no_wrap("BLACKLINE".into(), theme::font_display(size), ink(p.text, 1.0));
+                painter.galley(Pos2::new(left + drift, rect.top() + 84.0), name, ink(p.text, 1.0));
+
+                // a hairline, then the foot: who makes it, and how far along
+                let foot_y = rect.bottom() - 40.0;
                 painter.line_segment(
-                    [
-                        Pos2::new(rect.left() + 40.0, rect.bottom() - 62.0),
-                        Pos2::new(rect.right() - 40.0, rect.bottom() - 62.0),
-                    ],
-                    egui::Stroke::new(1.0_f32, ink(p.text_faint, 0.30)),
+                    [Pos2::new(left, foot_y - 26.0), Pos2::new(left + width, foot_y - 26.0)],
+                    egui::Stroke::new(1.0_f32, ink(p.line, 1.0)),
                 );
                 theme::tracked_text(
                     painter,
-                    Pos2::new(rect.left() + 40.0, rect.bottom() - 36.0),
-                    "NATIVECOMPUTE",
-                    theme::font_semi(theme::T_MICRO),
+                    Pos2::new(left, foot_y),
+                    "BY NATIVECOMPUTE",
+                    theme::font_hud(theme::T_MICRO + 0.5),
                     ink(p.text_faint, 1.0),
-                    1.6,
+                    0.8,
                 );
-                logo::spinner(
-                    painter,
-                    Pos2::new(rect.right() - 52.0, rect.bottom() - 38.0),
-                    10.0,
-                    anim::clock(ui.ctx()) * 0.9,
-                    ink(p.sec_light, 0.95),
+                // a 2px track filling in the light signal blue, as the site's
+                // range input is drawn
+                let track = Rect::from_min_size(Pos2::new(left + width - 140.0, foot_y - 1.0), Vec2::new(140.0, 2.0));
+                painter.rect_filled(track, egui::Rounding::ZERO, ink(p.line_strong, 1.0));
+                let done = anim::ease_out_expo((t / HOLD).clamp(0.0, 1.0));
+                painter.rect_filled(
+                    Rect::from_min_size(track.min, Vec2::new(track.width() * done, 2.0)),
+                    egui::Rounding::ZERO,
+                    ink(p.primary_light, 1.0),
                 );
 
                 if resp.clicked() && self.skip_at.is_none() {

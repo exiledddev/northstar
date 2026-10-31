@@ -291,14 +291,6 @@ pub trait Store {
 
     fn read_settings(&mut self) -> Settings;
     fn write_settings(&mut self, s: &Settings) -> Result<(), String>;
-    /// Tesseract's look and when it last changed, where Tesseract is installed.
-    fn tesseract_look(&mut self) -> Option<(Settings, SystemTime)> {
-        None
-    }
-    /// Has Tesseract been run here, so there is a look to follow?
-    fn has_tesseract(&self) -> bool {
-        false
-    }
 
     // ---- the world outside ----
 
@@ -471,14 +463,6 @@ mod local {
 
         fn write_settings(&mut self, s: &Settings) -> Result<(), String> {
             storage::write_settings(s).map_err(|e| e.to_string())
-        }
-
-        fn tesseract_look(&mut self) -> Option<(Settings, SystemTime)> {
-            storage::read_tesseract_settings()
-        }
-
-        fn has_tesseract(&self) -> bool {
-            storage::tesseract_settings_path().exists()
         }
 
         fn deliver(&mut self, name: &str, bytes: Vec<u8>, after: Option<AfterExport>) -> Result<String, String> {

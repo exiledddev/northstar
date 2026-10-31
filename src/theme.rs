@@ -1,21 +1,15 @@
-//! Themes, tokens and the painting primitives the whole app is drawn with.
+//! Tokens and the painting primitives the whole app is drawn with.
 //!
-//! This is the design system, shared with Tesseract value for value,
-//! so the two apps sit side by side on a desktop as one family. Two surface
-//! families, and which one a thing gets is the whole visual idea:
+//! This is NativeCompute's design language, taken from its website value for
+//! value: void black, chrome and one signal blue; Anybody for display and UI,
+//! JetBrains Mono for HUD readouts; hairline borders, 2px corners, and no
+//! glass, glows or shadows. One look, with a dark cast and a light one.
 //!
-//! * **glass** — translucent, sitting on whatever the compositor blurs behind
-//!   the window. The ribbon, the script's title band, popovers, index cards,
-//!   the gaps between islands. Nothing you stare at.
-//! * **solid** — opaque islands with rounded corners. The library rail, the
-//!   script page, the scene navigator. Everything you actually work in.
-//!
-//! Five themes, each with a light and a dark cast. A theme carries a *primary*
-//! (the app's accent) and a *secondary* (the gradient the scene stars and their
-//! glow are built from).
+//! The field names still say "glass" and "solid" in places; both are opaque
+//! panel fills now, kept so every caller reads the palette the same way.
 
-// The shared kit is kept whole and in step with Tesseract's copy: a
-// primitive with no caller in Blackline today is still part of the language.
+// The kit is kept whole: a primitive with no caller today is still part of
+// the language.
 #![allow(dead_code)]
 
 use std::sync::RwLock;
@@ -27,89 +21,24 @@ use eframe::egui::{
     Shape, Stroke, Vec2,
 };
 
-// ---------------------------------------------------------------- identity --
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub enum ThemeId {
-    #[default]
-    Zen,
-    Ember,
-    Frostbite,
-    Bloodmoon,
-    Void,
-    /// Blackline's own addition: orange into magenta into violet, on
-    /// JetBrains' near-black.
-    JetBrains,
-}
-
-impl ThemeId {
-    pub const ALL: [ThemeId; 6] = [
-        ThemeId::Zen,
-        ThemeId::Ember,
-        ThemeId::Frostbite,
-        ThemeId::Bloodmoon,
-        ThemeId::Void,
-        ThemeId::JetBrains,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            ThemeId::Zen => "Zen",
-            ThemeId::Ember => "Ember",
-            ThemeId::Frostbite => "Frostbite",
-            ThemeId::Bloodmoon => "Bloodmoon",
-            ThemeId::Void => "Void",
-            ThemeId::JetBrains => "JetBrains",
-        }
-    }
-
-    pub fn blurb(self) -> &'static str {
-        match self {
-            ThemeId::Zen => "Matcha and copper",
-            ThemeId::Ember => "Autumn warmth, gold embers",
-            ThemeId::Frostbite => "Winter light, ice blue",
-            ThemeId::Bloodmoon => "Deep crimson",
-            ThemeId::Void => "Violet dark",
-            ThemeId::JetBrains => "Orange, magenta, violet",
-        }
-    }
-
-    pub fn slug(self) -> &'static str {
-        match self {
-            ThemeId::Zen => "zen",
-            ThemeId::Ember => "ember",
-            ThemeId::Frostbite => "frostbite",
-            ThemeId::Bloodmoon => "bloodmoon",
-            ThemeId::Void => "void",
-            ThemeId::JetBrains => "jetbrains",
-        }
-    }
-
-    pub fn from_slug(s: &str) -> Option<ThemeId> {
-        ThemeId::ALL.into_iter().find(|t| t.slug() == s)
-    }
-}
-
 // ----------------------------------------------------------------- palette --
 
 /// Every colour the app draws with. Copied out of the global on each read, so
 /// it is deliberately small and plain.
 #[derive(Clone, Copy)]
 pub struct Palette {
-    pub id: ThemeId,
     pub dark: bool,
 
-    /// What the window is cleared to. Its alpha is set separately from the
-    /// blur mode, see [`backdrop_alpha`].
+    /// What the window is cleared to.
     pub backdrop: Color32,
 
-    // glass — translucent, over the blur
+    // panels that sit over the page
     pub glass: Color32,
     pub glass_hi: Color32,
     pub glass_line: Color32,
     pub glass_edge: Color32,
 
-    // solid — the islands
+    // panels you work in
     pub solid: Color32,
     pub solid_hi: Color32,
     pub sunken: Color32,
@@ -154,523 +83,98 @@ impl Palette {
     }
 }
 
-pub fn palette(id: ThemeId, dark: bool) -> Palette {
-    match (id, dark) {
-        // ------------------------------------------------------------- Zen --
-        (ThemeId::Zen, true) => Palette {
-            id,
+/// Blackline's one look, NativeCompute's: void black, chrome, and one signal
+/// blue, with a light paper variant in the same language.
+pub fn palette(dark: bool) -> Palette {
+    // white or black at a given strength, for the hairlines
+    let a = |base: u8, alpha: u8| Color32::from_rgba_unmultiplied(base, base, base, alpha);
+    if dark {
+        Palette {
             dark,
-            backdrop: c(0x07, 0x0B, 0x09),
-            glass: c(0x0E, 0x14, 0x11),
-            glass_hi: c(0x16, 0x1F, 0x1A),
-            glass_line: c(0x2A, 0x38, 0x31),
-            glass_edge: c(0x4A, 0x60, 0x55),
-            solid: c(0x0D, 0x12, 0x0F),
-            solid_hi: c(0x15, 0x1C, 0x18),
-            sunken: c(0x08, 0x0C, 0x0A),
-            raised: c(0x1A, 0x23, 0x1E),
-            line: c(0x20, 0x2A, 0x25),
-            line_strong: c(0x33, 0x41, 0x3A),
-            text: c(0xE8, 0xED, 0xE9),
-            text_dim: c(0x9D, 0xA9, 0xA2),
-            text_faint: c(0x66, 0x71, 0x6B),
-            ink: c(0x06, 0x17, 0x0F),
-            primary: c(0x7F, 0xB3, 0x94),
-            primary_light: c(0xA9, 0xD4, 0xBB),
-            primary_deep: c(0x35, 0x60, 0x4D),
-            primary_quiet: c(0x0F, 0x1D, 0x18),
-            primary_quiet_hi: c(0x15, 0x28, 0x21),
-            prim_grad: (c(0x3E, 0x7E, 0x5C), c(0xAE, 0xD9, 0xC0)),
-            sec: c(0xC0, 0x85, 0x52),
-            sec_light: c(0xE8, 0xB0, 0x74),
-            sec_deep: c(0x6B, 0x3A, 0x18),
-            sec_grad: (c(0x8A, 0x4B, 0x1E), c(0xEC, 0xBA, 0x84)),
-            danger: c(0xE2, 0x53, 0x40),
-            danger_light: c(0xFF, 0x7A, 0x63),
-            warn: c(0xF0, 0xB4, 0x3C),
-            ok: c(0x7F, 0xB3, 0x94),
+            backdrop: c(0x00, 0x00, 0x00),
+            glass: c(0x07, 0x08, 0x0D),
+            glass_hi: c(0x13, 0x16, 0x24),
+            glass_line: a(255, 31),
+            glass_edge: a(255, 66),
+            solid: c(0x07, 0x08, 0x0D),
+            solid_hi: c(0x0C, 0x0E, 0x16),
+            sunken: c(0x00, 0x00, 0x00),
+            raised: c(0x13, 0x16, 0x24),
+            line: a(255, 31),
+            line_strong: a(255, 66),
+            text: c(0xF2, 0xF3, 0xF7),
+            text_dim: c(0xA6, 0xAB, 0xC2),
+            text_faint: c(0x8A, 0x8F, 0xA8),
+            ink: c(0xFF, 0xFF, 0xFF),
+            primary: c(0x3B, 0x4C, 0xFF),
+            primary_light: c(0x6E, 0x7B, 0xFF),
+            primary_deep: c(0x2A, 0x36, 0xC8),
+            primary_quiet: Color32::from_rgba_unmultiplied(0x3B, 0x4C, 0xFF, 36),
+            primary_quiet_hi: Color32::from_rgba_unmultiplied(0x3B, 0x4C, 0xFF, 56),
+            prim_grad: (c(0x3B, 0x4C, 0xFF), c(0x3B, 0x4C, 0xFF)),
+            sec: c(0xC9, 0xCD, 0xDB),
+            sec_light: c(0xF2, 0xF3, 0xF7),
+            sec_deep: c(0x8A, 0x8F, 0xA8),
+            // chrome: the slabs of the mark, lit from above
+            sec_grad: (c(0x8A, 0x8F, 0xA8), c(0xF2, 0xF3, 0xF7)),
+            danger: c(0xFF, 0x6B, 0x7A),
+            danger_light: c(0xFF, 0x9A, 0xA5),
+            warn: c(0xF5, 0xC4, 0x51),
+            ok: c(0x5E, 0xE0, 0xA0),
             groups: [
-                c(0x7F, 0xB3, 0x94),
-                c(0xC0, 0x85, 0x52),
-                c(0x8F, 0xA8, 0xC4),
-                c(0xC4, 0x9A, 0xB8),
-                c(0xC4, 0x70, 0x5C),
-                c(0x9C, 0xC2, 0x7F),
+                c(0x6E, 0x7B, 0xFF),
+                c(0x5C, 0xC8, 0xFF),
+                c(0xA7, 0x8B, 0xFA),
+                c(0x5E, 0xE0, 0xA0),
+                c(0xF5, 0xC4, 0x51),
+                c(0xFF, 0x6B, 0x7A),
             ],
-        },
-        (ThemeId::Zen, false) => Palette {
-            id,
+        }
+    } else {
+        Palette {
             dark,
-            backdrop: c(0xDD, 0xE5, 0xE0),
-            glass: c(0xFA, 0xFD, 0xFB),
-            glass_hi: c(0xFF, 0xFF, 0xFF),
-            glass_line: c(0xD2, 0xDE, 0xD6),
-            glass_edge: c(0xFF, 0xFF, 0xFF),
+            backdrop: c(0xF4, 0xF5, 0xF8),
+            glass: c(0xFF, 0xFF, 0xFF),
+            glass_hi: c(0xEC, 0xEE, 0xF4),
+            glass_line: a(0, 31),
+            glass_edge: a(0, 66),
             solid: c(0xFF, 0xFF, 0xFF),
-            solid_hi: c(0xF2, 0xF7, 0xF4),
-            sunken: c(0xE7, 0xEE, 0xEA),
-            raised: c(0xF7, 0xFA, 0xF8),
-            line: c(0xDC, 0xE4, 0xDF),
-            line_strong: c(0xB6, 0xC4, 0xBC),
-            text: c(0x16, 0x20, 0x1A),
-            text_dim: c(0x4E, 0x5A, 0x53),
-            text_faint: c(0x7C, 0x88, 0x80),
+            solid_hi: c(0xF6, 0xF7, 0xFA),
+            sunken: c(0xEC, 0xEE, 0xF4),
+            raised: c(0xE6, 0xE9, 0xF1),
+            line: a(0, 31),
+            line_strong: a(0, 66),
+            text: c(0x0B, 0x0C, 0x12),
+            text_dim: c(0x45, 0x4A, 0x5E),
+            text_faint: c(0x5F, 0x64, 0x7A),
             ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0x2F, 0x7A, 0x57),
-            primary_light: c(0x48, 0xA2, 0x77),
-            primary_deep: c(0x1B, 0x4A, 0x34),
-            primary_quiet: c(0xE4, 0xF2, 0xEA),
-            primary_quiet_hi: c(0xD5, 0xEB, 0xDE),
-            prim_grad: (c(0x25, 0x63, 0x46), c(0x63, 0xB9, 0x8D)),
-            sec: c(0xA2, 0x66, 0x2F),
-            sec_light: c(0xC9, 0x8B, 0x4C),
-            sec_deep: c(0x6B, 0x3A, 0x18),
-            sec_grad: (c(0x8A, 0x4B, 0x1E), c(0xD7, 0x9B, 0x58)),
-            danger: c(0xD0, 0x3A, 0x22),
-            danger_light: c(0xE8, 0x5B, 0x3E),
-            warn: c(0xA9, 0x7A, 0x1E),
-            ok: c(0x2F, 0x7A, 0x57),
+            primary: c(0x3B, 0x4C, 0xFF),
+            primary_light: c(0x2B, 0x3A, 0xE0),
+            primary_deep: c(0x1F, 0x2A, 0xB0),
+            primary_quiet: Color32::from_rgba_unmultiplied(0x3B, 0x4C, 0xFF, 26),
+            primary_quiet_hi: Color32::from_rgba_unmultiplied(0x3B, 0x4C, 0xFF, 44),
+            prim_grad: (c(0x3B, 0x4C, 0xFF), c(0x3B, 0x4C, 0xFF)),
+            sec: c(0x2A, 0x2D, 0x3A),
+            sec_light: c(0x0B, 0x0C, 0x12),
+            sec_deep: c(0x5F, 0x64, 0x7A),
+            sec_grad: (c(0x05, 0x06, 0x0A), c(0x3A, 0x3E, 0x4E)),
+            danger: c(0xD1, 0x24, 0x3B),
+            danger_light: c(0xE5, 0x4B, 0x5E),
+            warn: c(0xB7, 0x7B, 0x00),
+            ok: c(0x14, 0x8A, 0x4F),
             groups: [
-                c(0x2F, 0x7A, 0x57),
-                c(0xA2, 0x66, 0x2F),
-                c(0x44, 0x6C, 0x99),
-                c(0x93, 0x4F, 0x83),
-                c(0xB2, 0x4B, 0x38),
-                c(0x5F, 0x8A, 0x30),
+                c(0x3B, 0x4C, 0xFF),
+                c(0x00, 0x86, 0xC2),
+                c(0x7C, 0x4D, 0xE8),
+                c(0x14, 0x8A, 0x4F),
+                c(0xB7, 0x7B, 0x00),
+                c(0xD1, 0x24, 0x3B),
             ],
-        },
-
-        // ----------------------------------------------------------- Ember --
-        (ThemeId::Ember, true) => Palette {
-            id,
-            dark,
-            backdrop: c(0x0B, 0x07, 0x05),
-            glass: c(0x16, 0x0F, 0x0B),
-            glass_hi: c(0x20, 0x16, 0x10),
-            glass_line: c(0x3A, 0x2A, 0x1F),
-            glass_edge: c(0x6A, 0x4C, 0x35),
-            solid: c(0x12, 0x0C, 0x09),
-            solid_hi: c(0x1B, 0x13, 0x0E),
-            sunken: c(0x0C, 0x08, 0x06),
-            raised: c(0x23, 0x19, 0x12),
-            line: c(0x2C, 0x1F, 0x17),
-            line_strong: c(0x48, 0x34, 0x27),
-            text: c(0xF0, 0xE8, 0xE2),
-            text_dim: c(0xAC, 0x9C, 0x90),
-            text_faint: c(0x75, 0x66, 0x5C),
-            ink: c(0x1A, 0x0A, 0x03),
-            primary: c(0xC9, 0x74, 0x3F),
-            primary_light: c(0xE8, 0xA0, 0x6A),
-            primary_deep: c(0x5E, 0x2C, 0x18),
-            primary_quiet: c(0x21, 0x11, 0x09),
-            primary_quiet_hi: c(0x2E, 0x18, 0x0D),
-            prim_grad: (c(0x5E, 0x2C, 0x18), c(0xD9, 0x86, 0x4B)),
-            sec: c(0xFF, 0x8A, 0x3D),
-            sec_light: c(0xFF, 0xD1, 0x66),
-            sec_deep: c(0xB4, 0x5A, 0x16),
-            sec_grad: (c(0xFF, 0x7A, 0x2E), c(0xFF, 0xD9, 0x7A)),
-            danger: c(0xF2, 0x4B, 0x33),
-            danger_light: c(0xFF, 0x86, 0x6B),
-            warn: c(0xFF, 0xBC, 0x2E),
-            ok: c(0x8F, 0xB5, 0x63),
-            groups: [
-                c(0xC9, 0x74, 0x3F),
-                c(0xFF, 0xD1, 0x66),
-                c(0xB5, 0x5A, 0x4A),
-                c(0x8F, 0xA0, 0x5E),
-                c(0xD0, 0x8A, 0x8A),
-                c(0x9C, 0x6B, 0xB0),
-            ],
-        },
-        (ThemeId::Ember, false) => Palette {
-            id,
-            dark,
-            backdrop: c(0xE9, 0xDE, 0xD3),
-            glass: c(0xFF, 0xFA, 0xF5),
-            glass_hi: c(0xFF, 0xFF, 0xFF),
-            glass_line: c(0xE0, 0xCE, 0xBE),
-            glass_edge: c(0xFF, 0xFF, 0xFF),
-            solid: c(0xFF, 0xFD, 0xFB),
-            solid_hi: c(0xF7, 0xEF, 0xE8),
-            sunken: c(0xEF, 0xE4, 0xDA),
-            raised: c(0xFF, 0xF6, 0xEF),
-            line: c(0xE5, 0xD6, 0xC9),
-            line_strong: c(0xC6, 0xAE, 0x9B),
-            text: c(0x24, 0x16, 0x10),
-            text_dim: c(0x5E, 0x4A, 0x3D),
-            text_faint: c(0x8B, 0x75, 0x66),
-            ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0xA9, 0x52, 0x2A),
-            primary_light: c(0xC9, 0x74, 0x3F),
-            primary_deep: c(0x6E, 0x30, 0x16),
-            primary_quiet: c(0xFA, 0xEB, 0xE0),
-            primary_quiet_hi: c(0xF3, 0xDD, 0xCB),
-            prim_grad: (c(0x6E, 0x30, 0x16), c(0xC9, 0x74, 0x3F)),
-            sec: c(0xE2, 0x70, 0x1A),
-            sec_light: c(0xF0, 0xA9, 0x3A),
-            sec_deep: c(0xA3, 0x4C, 0x10),
-            sec_grad: (c(0xD9, 0x63, 0x1A), c(0xF5, 0xB9, 0x42)),
-            danger: c(0xB8, 0x38, 0x2C),
-            danger_light: c(0xD6, 0x5C, 0x4C),
-            warn: c(0xB0, 0x7C, 0x14),
-            ok: c(0x53, 0x82, 0x3E),
-            groups: [
-                c(0xA9, 0x52, 0x2A),
-                c(0xC9, 0x91, 0x1E),
-                c(0x9E, 0x40, 0x36),
-                c(0x6B, 0x7D, 0x36),
-                c(0xA6, 0x5A, 0x5A),
-                c(0x6E, 0x48, 0x8A),
-            ],
-        },
-
-        // -------------------------------------------------------- Frostbite --
-        (ThemeId::Frostbite, true) => Palette {
-            id,
-            dark,
-            backdrop: c(0x04, 0x07, 0x0B),
-            glass: c(0x0B, 0x12, 0x1A),
-            glass_hi: c(0x12, 0x1C, 0x26),
-            glass_line: c(0x25, 0x36, 0x46),
-            glass_edge: c(0x46, 0x66, 0x82),
-            solid: c(0x0A, 0x10, 0x17),
-            solid_hi: c(0x11, 0x1A, 0x23),
-            sunken: c(0x07, 0x0C, 0x11),
-            raised: c(0x17, 0x23, 0x2E),
-            line: c(0x1D, 0x2B, 0x38),
-            line_strong: c(0x31, 0x46, 0x5A),
-            text: c(0xE6, 0xEE, 0xF5),
-            text_dim: c(0x97, 0xA8, 0xB7),
-            text_faint: c(0x63, 0x74, 0x84),
-            ink: c(0x04, 0x12, 0x1B),
-            primary: c(0x8F, 0xB8, 0xD9),
-            primary_light: c(0xC2, 0xDC, 0xF0),
-            primary_deep: c(0x2A, 0x42, 0x56),
-            primary_quiet: c(0x0E, 0x1B, 0x26),
-            primary_quiet_hi: c(0x15, 0x27, 0x35),
-            prim_grad: (c(0x2A, 0x42, 0x56), c(0xCF, 0xE6, 0xF5)),
-            sec: c(0x35, 0xC6, 0xF4),
-            sec_light: c(0x8A, 0xE9, 0xFF),
-            sec_deep: c(0x0E, 0x6E, 0x93),
-            sec_grad: (c(0x1F, 0xA6, 0xE0), c(0x9D, 0xF0, 0xFF)),
-            danger: c(0xF2, 0x43, 0x62),
-            danger_light: c(0xFF, 0x76, 0x8E),
-            warn: c(0xF5, 0xC8, 0x45),
-            ok: c(0x5F, 0xC7, 0xA8),
-            groups: [
-                c(0x8F, 0xB8, 0xD9),
-                c(0x35, 0xC6, 0xF4),
-                c(0x9A, 0xB0, 0xE0),
-                c(0x74, 0xD4, 0xC4),
-                c(0xD9, 0x57, 0x6B),
-                c(0xB8, 0xA8, 0xE8),
-            ],
-        },
-        (ThemeId::Frostbite, false) => Palette {
-            id,
-            dark,
-            backdrop: c(0xDB, 0xE6, 0xEF),
-            glass: c(0xFB, 0xFD, 0xFF),
-            glass_hi: c(0xFF, 0xFF, 0xFF),
-            glass_line: c(0xCE, 0xDD, 0xE9),
-            glass_edge: c(0xFF, 0xFF, 0xFF),
-            solid: c(0xFF, 0xFF, 0xFF),
-            solid_hi: c(0xF1, 0xF6, 0xFA),
-            sunken: c(0xE4, 0xED, 0xF4),
-            raised: c(0xF7, 0xFB, 0xFD),
-            line: c(0xD7, 0xE2, 0xEB),
-            line_strong: c(0xB0, 0xC2, 0xD1),
-            text: c(0x10, 0x20, 0x2C),
-            text_dim: c(0x48, 0x60, 0x6F),
-            text_faint: c(0x7A, 0x8E, 0x9C),
-            ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0x2E, 0x6C, 0x96),
-            primary_light: c(0x4A, 0x8F, 0xBE),
-            primary_deep: c(0x1A, 0x3F, 0x58),
-            primary_quiet: c(0xE3, 0xEF, 0xF7),
-            primary_quiet_hi: c(0xD1, 0xE5, 0xF2),
-            prim_grad: (c(0x1A, 0x3F, 0x58), c(0x6F, 0xB0, 0xD8)),
-            sec: c(0x0E, 0x9B, 0xC8),
-            sec_light: c(0x4F, 0xC7, 0xEA),
-            sec_deep: c(0x07, 0x5E, 0x7C),
-            sec_grad: (c(0x0E, 0x9B, 0xC8), c(0x6F, 0xDB, 0xF5)),
-            danger: c(0xC0, 0x3D, 0x55),
-            danger_light: c(0xDD, 0x64, 0x79),
-            warn: c(0xA8, 0x86, 0x14),
-            ok: c(0x1E, 0x8A, 0x6E),
-            groups: [
-                c(0x2E, 0x6C, 0x96),
-                c(0x0E, 0x9B, 0xC8),
-                c(0x4C, 0x60, 0xA8),
-                c(0x1E, 0x8A, 0x6E),
-                c(0xC0, 0x3D, 0x55),
-                c(0x76, 0x5C, 0xB8),
-            ],
-        },
-
-        // -------------------------------------------------------- Bloodmoon --
-        (ThemeId::Bloodmoon, true) => Palette {
-            id,
-            dark,
-            backdrop: c(0x0A, 0x04, 0x06),
-            glass: c(0x16, 0x0A, 0x0D),
-            glass_hi: c(0x20, 0x11, 0x15),
-            glass_line: c(0x3A, 0x20, 0x26),
-            glass_edge: c(0x6E, 0x3A, 0x44),
-            solid: c(0x12, 0x0A, 0x0C),
-            solid_hi: c(0x1B, 0x11, 0x14),
-            sunken: c(0x0C, 0x07, 0x09),
-            raised: c(0x24, 0x14, 0x18),
-            line: c(0x2E, 0x1A, 0x1E),
-            line_strong: c(0x4A, 0x2A, 0x31),
-            text: c(0xF3, 0xE7, 0xE9),
-            text_dim: c(0xB0, 0x98, 0x9D),
-            text_faint: c(0x7A, 0x64, 0x69),
-            ink: c(0x14, 0x04, 0x06),
-            primary: c(0xC6, 0x41, 0x4A),
-            primary_light: c(0xE4, 0x73, 0x7B),
-            primary_deep: c(0x4A, 0x0F, 0x16),
-            primary_quiet: c(0x20, 0x0C, 0x10),
-            primary_quiet_hi: c(0x2D, 0x11, 0x16),
-            prim_grad: (c(0x4A, 0x0F, 0x16), c(0xD9, 0x60, 0x6A)),
-            sec: c(0xE0, 0x1F, 0x3D),
-            sec_light: c(0xFF, 0x8A, 0x5F),
-            sec_deep: c(0x86, 0x09, 0x1F),
-            sec_grad: (c(0xB3, 0x12, 0x2E), c(0xFF, 0x9A, 0x6B)),
-            danger: c(0xFF, 0x5A, 0x5F),
-            danger_light: c(0xFF, 0x8A, 0x8E),
-            warn: c(0xF7, 0xAE, 0x33),
-            ok: c(0x76, 0xB0, 0x86),
-            groups: [
-                c(0xC6, 0x41, 0x4A),
-                c(0xFF, 0x8A, 0x5F),
-                c(0xB0, 0x6A, 0x9A),
-                c(0x8A, 0x6E, 0xB8),
-                c(0xD9, 0xA8, 0x5C),
-                c(0x76, 0xB0, 0x86),
-            ],
-        },
-        (ThemeId::Bloodmoon, false) => Palette {
-            id,
-            dark,
-            backdrop: c(0xEA, 0xDA, 0xDC),
-            glass: c(0xFF, 0xFB, 0xFB),
-            glass_hi: c(0xFF, 0xFF, 0xFF),
-            glass_line: c(0xE2, 0xCC, 0xCF),
-            glass_edge: c(0xFF, 0xFF, 0xFF),
-            solid: c(0xFF, 0xFF, 0xFF),
-            solid_hi: c(0xF8, 0xEF, 0xF0),
-            sunken: c(0xEF, 0xE0, 0xE2),
-            raised: c(0xFF, 0xF6, 0xF6),
-            line: c(0xE6, 0xD2, 0xD5),
-            line_strong: c(0xC4, 0xA4, 0xA9),
-            text: c(0x26, 0x12, 0x15),
-            text_dim: c(0x5E, 0x40, 0x46),
-            text_faint: c(0x8A, 0x6A, 0x70),
-            ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0xA8, 0x1F, 0x2C),
-            primary_light: c(0xC6, 0x41, 0x4A),
-            primary_deep: c(0x6E, 0x0A, 0x14),
-            primary_quiet: c(0xFA, 0xE7, 0xE9),
-            primary_quiet_hi: c(0xF3, 0xD6, 0xD9),
-            prim_grad: (c(0x6E, 0x0A, 0x14), c(0xC6, 0x41, 0x4A)),
-            sec: c(0xC4, 0x12, 0x30),
-            sec_light: c(0xF0, 0x7A, 0x4E),
-            sec_deep: c(0x7C, 0x04, 0x18),
-            sec_grad: (c(0xC4, 0x12, 0x30), c(0xF5, 0x8B, 0x5C)),
-            danger: c(0xB0, 0x18, 0x24),
-            danger_light: c(0xD4, 0x44, 0x50),
-            warn: c(0xA8, 0x7A, 0x18),
-            ok: c(0x30, 0x7A, 0x4E),
-            groups: [
-                c(0xA8, 0x1F, 0x2C),
-                c(0xD9, 0x63, 0x30),
-                c(0x94, 0x3C, 0x77),
-                c(0x5A, 0x46, 0x9E),
-                c(0xA8, 0x7A, 0x18),
-                c(0x30, 0x7A, 0x4E),
-            ],
-        },
-
-        // ------------------------------------------------------------ Void --
-        (ThemeId::Void, true) => Palette {
-            id,
-            dark,
-            backdrop: c(0x06, 0x04, 0x0B),
-            glass: c(0x12, 0x0D, 0x1C),
-            glass_hi: c(0x1A, 0x13, 0x27),
-            glass_line: c(0x30, 0x24, 0x46),
-            glass_edge: c(0x5C, 0x46, 0x84),
-            solid: c(0x0F, 0x0A, 0x18),
-            solid_hi: c(0x16, 0x10, 0x22),
-            sunken: c(0x0A, 0x07, 0x13),
-            raised: c(0x1E, 0x16, 0x30),
-            line: c(0x28, 0x1E, 0x3A),
-            line_strong: c(0x3F, 0x2F, 0x5A),
-            text: c(0xEC, 0xE7, 0xF5),
-            text_dim: c(0xA9, 0x9C, 0xC0),
-            text_faint: c(0x74, 0x68, 0x89),
-            ink: c(0x0B, 0x05, 0x18),
-            primary: c(0x9B, 0x6B, 0xE0),
-            primary_light: c(0xC7, 0xA6, 0xFF),
-            primary_deep: c(0x2E, 0x1A, 0x4D),
-            primary_quiet: c(0x18, 0x10, 0x2A),
-            primary_quiet_hi: c(0x22, 0x17, 0x3B),
-            prim_grad: (c(0x2E, 0x1A, 0x4D), c(0xC7, 0xA6, 0xFF)),
-            sec: c(0x7C, 0x3A, 0xED),
-            sec_light: c(0xE8, 0x79, 0xF9),
-            sec_deep: c(0x4B, 0x1E, 0x96),
-            sec_grad: (c(0x7C, 0x3A, 0xED), c(0xEC, 0x8F, 0xFB)),
-            danger: c(0xE5, 0x48, 0x4D),
-            danger_light: c(0xF0, 0x7A, 0x7E),
-            warn: c(0xF7, 0xC0, 0x3B),
-            ok: c(0x62, 0xC9, 0xA8),
-            groups: [
-                c(0x9B, 0x6B, 0xE0),
-                c(0xE8, 0x79, 0xF9),
-                c(0x6B, 0x8A, 0xE0),
-                c(0x62, 0xC9, 0xA8),
-                c(0xE5, 0x48, 0x4D),
-                c(0xE0, 0xB8, 0x5C),
-            ],
-        },
-        (ThemeId::Void, false) => Palette {
-            id,
-            dark,
-            backdrop: c(0xE2, 0xDC, 0xEF),
-            glass: c(0xFC, 0xFA, 0xFF),
-            glass_hi: c(0xFF, 0xFF, 0xFF),
-            glass_line: c(0xDA, 0xD0, 0xEC),
-            glass_edge: c(0xFF, 0xFF, 0xFF),
-            solid: c(0xFF, 0xFF, 0xFF),
-            solid_hi: c(0xF5, 0xF1, 0xFB),
-            sunken: c(0xE9, 0xE3, 0xF3),
-            raised: c(0xFA, 0xF7, 0xFE),
-            line: c(0xE0, 0xD8, 0xEE),
-            line_strong: c(0xBC, 0xAE, 0xD6),
-            text: c(0x1A, 0x12, 0x26),
-            text_dim: c(0x4E, 0x41, 0x66),
-            text_faint: c(0x7C, 0x6E, 0x96),
-            ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0x6D, 0x3B, 0xC4),
-            primary_light: c(0x8B, 0x5C, 0xE0),
-            primary_deep: c(0x3F, 0x1F, 0x7A),
-            primary_quiet: c(0xEE, 0xE7, 0xFA),
-            primary_quiet_hi: c(0xE1, 0xD6, 0xF6),
-            prim_grad: (c(0x3F, 0x1F, 0x7A), c(0x8B, 0x5C, 0xE0)),
-            sec: c(0x7C, 0x3A, 0xED),
-            sec_light: c(0xC0, 0x5B, 0xE0),
-            sec_deep: c(0x4B, 0x1E, 0x96),
-            sec_grad: (c(0x7C, 0x3A, 0xED), c(0xD0, 0x6B, 0xE8)),
-            danger: c(0xC0, 0x2E, 0x3A),
-            danger_light: c(0xDC, 0x56, 0x60),
-            warn: c(0xA8, 0x7C, 0x14),
-            ok: c(0x1E, 0x8A, 0x6E),
-            groups: [
-                c(0x6D, 0x3B, 0xC4),
-                c(0xB0, 0x3C, 0xC4),
-                c(0x3C, 0x5C, 0xC4),
-                c(0x1E, 0x8A, 0x6E),
-                c(0xC0, 0x2E, 0x3A),
-                c(0xA8, 0x7C, 0x14),
-            ],
-        },
-
-        // ------------------------------------------------------- JetBrains --
-        // Taken from the JetBrains artwork: a near-black ground, and arches
-        // that run from marigold through pink and magenta into deep violet.
-        // The secondary — the energy colour the stars are made of — is the
-        // warm end of that run; the primary is its magenta heart.
-        (ThemeId::JetBrains, true) => Palette {
-            id,
-            dark,
-            backdrop: c(0x0D, 0x0C, 0x10),
-            glass: c(0x17, 0x16, 0x1A),
-            glass_hi: c(0x20, 0x1E, 0x25),
-            glass_line: c(0x33, 0x2C, 0x3C),
-            glass_edge: c(0x62, 0x4C, 0x74),
-            solid: c(0x15, 0x14, 0x18),
-            solid_hi: c(0x1D, 0x1B, 0x21),
-            sunken: c(0x0F, 0x0E, 0x12),
-            raised: c(0x24, 0x21, 0x2A),
-            line: c(0x2A, 0x26, 0x30),
-            line_strong: c(0x43, 0x3A, 0x4D),
-            text: c(0xEE, 0xEC, 0xF1),
-            text_dim: c(0xA9, 0xA3, 0xB3),
-            text_faint: c(0x71, 0x6B, 0x7B),
-            ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0xB0, 0x52, 0xC4),
-            primary_light: c(0xD4, 0x9A, 0xE0),
-            primary_deep: c(0x4E, 0x12, 0x78),
-            primary_quiet: c(0x1D, 0x10, 0x25),
-            primary_quiet_hi: c(0x2A, 0x15, 0x37),
-            prim_grad: (c(0x45, 0x26, 0x8E), c(0xA2, 0x3E, 0xB2)),
-            sec: c(0xE8, 0x92, 0x4E),
-            sec_light: c(0xF0, 0xBE, 0x62),
-            sec_deep: c(0xA8, 0x2E, 0x6A),
-            sec_grad: (c(0xC8, 0x4C, 0x8E), c(0xF0, 0xB4, 0x55)),
-            danger: c(0xFF, 0x4F, 0x5E),
-            danger_light: c(0xFF, 0x82, 0x8B),
-            warn: c(0xFD, 0xB3, 0x2A),
-            ok: c(0x3D, 0xD6, 0x95),
-            groups: [
-                c(0xD1, 0x4B, 0xE0),
-                c(0xFD, 0xB3, 0x2A),
-                c(0x7E, 0x6B, 0xFF),
-                c(0xF0, 0x5C, 0xA8),
-                c(0x3D, 0xC5, 0xE0),
-                c(0x3D, 0xD6, 0x95),
-            ],
-        },
-        (ThemeId::JetBrains, false) => Palette {
-            id,
-            dark,
-            backdrop: c(0xE4, 0xE1, 0xEA),
-            glass: c(0xFC, 0xFB, 0xFE),
-            glass_hi: c(0xFF, 0xFF, 0xFF),
-            glass_line: c(0xDA, 0xD3, 0xE4),
-            glass_edge: c(0xFF, 0xFF, 0xFF),
-            solid: c(0xFF, 0xFF, 0xFF),
-            solid_hi: c(0xF6, 0xF3, 0xF9),
-            sunken: c(0xEB, 0xE7, 0xF1),
-            raised: c(0xFA, 0xF8, 0xFD),
-            line: c(0xE2, 0xDC, 0xEA),
-            line_strong: c(0xBF, 0xB4, 0xCD),
-            text: c(0x17, 0x13, 0x1F),
-            text_dim: c(0x4C, 0x44, 0x58),
-            text_faint: c(0x7D, 0x75, 0x89),
-            ink: c(0xFF, 0xFF, 0xFF),
-            primary: c(0x9A, 0x10, 0xA8),
-            primary_light: c(0xB6, 0x3A, 0xC6),
-            primary_deep: c(0x4A, 0x0A, 0x6E),
-            primary_quiet: c(0xF6, 0xE7, 0xF8),
-            primary_quiet_hi: c(0xEE, 0xD5, 0xF2),
-            prim_grad: (c(0x4A, 0x2E, 0x96), c(0x96, 0x34, 0xA6)),
-            sec: c(0xE0, 0x6E, 0x10),
-            sec_light: c(0xF2, 0x98, 0x1C),
-            sec_deep: c(0x9A, 0x22, 0x5C),
-            sec_grad: (c(0xB8, 0x3A, 0x7C), c(0xE0, 0x96, 0x2E)),
-            danger: c(0xC4, 0x28, 0x3A),
-            danger_light: c(0xE0, 0x50, 0x5E),
-            warn: c(0xB0, 0x7A, 0x0E),
-            ok: c(0x17, 0x8A, 0x5E),
-            groups: [
-                c(0x9A, 0x10, 0xA8),
-                c(0xC2, 0x7A, 0x0A),
-                c(0x5A, 0x2B, 0xD0),
-                c(0xC0, 0x28, 0x7A),
-                c(0x1E, 0x8F, 0xA8),
-                c(0x17, 0x8A, 0x5E),
-            ],
-        },
+        }
     }
 }
 
 static CURRENT: RwLock<Option<Palette>> = RwLock::new(None);
-/// How solid the glass reads, as f32 bits. Set from Settings and from whether
-/// the compositor actually gave us a blur.
-static GLASS: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0x3F19999A); // 0.6
 
 /// The palette everything paints with.
 pub fn pal() -> Palette {
@@ -679,38 +183,27 @@ pub fn pal() -> Palette {
             return p;
         }
     }
-    palette(ThemeId::Zen, true)
+    palette(true)
 }
 
-pub fn set_palette(id: ThemeId, dark: bool) {
+/// Dark or light.
+pub fn set_palette(dark: bool) {
     if let Ok(mut g) = CURRENT.write() {
-        *g = Some(palette(id, dark));
+        *g = Some(palette(dark));
     }
-}
-
-/// 0.35 (very see-through) to 1.0 (opaque).
-pub fn set_glass_opacity(v: f32) {
-    GLASS.store(
-        v.clamp(0.2, 1.0).to_bits(),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-}
-
-pub fn glass_opacity() -> f32 {
-    f32::from_bits(GLASS.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 // ----------------------------------------------------------------- metrics --
 
 /// The window's own corner radius.
-pub const R_WINDOW: f32 = 13.0;
-pub const R_SM: f32 = 8.0;
-pub const R_MD: f32 = 12.0;
-pub const R_CTRL: f32 = 10.0;
-pub const R_CARD: f32 = 16.0;
-pub const R_ISLAND: f32 = 18.0;
-pub const R_PANEL: f32 = 24.0;
-pub const R_PILL: f32 = 999.0;
+pub const R_WINDOW: f32 = 2.0;
+pub const R_SM: f32 = 2.0;
+pub const R_MD: f32 = 2.0;
+pub const R_CTRL: f32 = 2.0;
+pub const R_CARD: f32 = 2.0;
+pub const R_ISLAND: f32 = 2.0;
+pub const R_PANEL: f32 = 2.0;
+pub const R_PILL: f32 = 2.0;
 
 pub const RAIL_W: f32 = 268.0;
 pub const OUTLINE_W: f32 = 246.0;
@@ -937,6 +430,9 @@ fn falloff(t: f32) -> f32 {
 ///
 /// `ring` is handed a distance from the shape and returns the outline there.
 /// Every ring must carry the same number of points.
+/// Glows are not part of the language.
+const GLOWS: bool = false;
+
 fn bloom_mesh<F>(
     painter: &egui::Painter,
     centre: Pos2,
@@ -947,7 +443,9 @@ fn bloom_mesh<F>(
 ) where
     F: Fn(f32) -> Vec<Pos2>,
 {
-    if strength <= 0.002 || spread <= 0.1 {
+    // The NativeCompute language has no glows: every bloom is off. The
+    // primitive stays so its callers keep their shape.
+    if !GLOWS || strength <= 0.002 || spread <= 0.1 {
         return;
     }
     // Low. A glow is atmosphere, not a second object drawn behind the first.
@@ -1087,20 +585,32 @@ pub fn star_points(centre: Pos2, r: f32, waist: f32) -> [Pos2; 8] {
     ]
 }
 
-/// A four-pointed star — Blackline's marker, where Tesseract has its rhombus —
-/// filled with a gradient.
+/// The old four-pointed star, filled with a gradient. `grad_star` now draws
+/// the square marker; this is kept for anything that still wants the star.
 ///
 /// A star is not convex, so it is laid down as four kites (tip, waist, centre,
 /// waist), each convex, each feathered, all sharing one gradient so the seams
 /// never show.
-pub fn grad_star(painter: &egui::Painter, centre: Pos2, r: f32, a: Color32, b: Color32) {
-    for s in star_shapes(centre, r, 0.5, a, b) {
-        painter.add(s);
-    }
+///
+/// In the NativeCompute language a marker is a small square, the way the
+/// site marks the page you are on: `r` sets its size, `b` its colour.
+pub fn grad_star(painter: &egui::Painter, centre: Pos2, r: f32, _a: Color32, b: Color32) {
+    painter.add(marker(centre, r, b));
 }
 
-/// The same star as shapes, for slotting in under content laid out later.
-pub fn star_shapes(centre: Pos2, r: f32, waist: f32, a: Color32, b: Color32) -> Vec<Shape> {
+/// The square marker on its own.
+pub fn marker(centre: Pos2, r: f32, color: Color32) -> Shape {
+    let side = (r * 1.1).round().max(4.0);
+    Shape::rect_filled(Rect::from_center_size(centre, Vec2::splat(side)), Rounding::ZERO, color)
+}
+
+/// The same marker as shapes, for slotting in under content laid out later.
+pub fn star_shapes(centre: Pos2, r: f32, _waist: f32, _a: Color32, b: Color32) -> Vec<Shape> {
+    vec![marker(centre, r, b)]
+}
+
+/// The four-pointed star, kept for anything that still wants it drawn.
+pub fn star_kites(centre: Pos2, r: f32, waist: f32, a: Color32, b: Color32) -> Vec<Shape> {
     let pts = star_points(centre, r, waist);
     // one gradient over the whole star, not four copies of it
     let dir = Vec2::new(0.6, 1.0).normalized();
@@ -1126,8 +636,7 @@ pub fn star_shapes(centre: Pos2, r: f32, waist: f32, a: Color32, b: Color32) -> 
 }
 
 /// A bloom the shape of the four-pointed star it comes off, relaxing into a
-/// circle as it spreads — the star is the light source, exactly as the
-/// rhombus is in Tesseract.
+/// circle as it spreads. A no-op while the language has no glows.
 pub fn glow_star(
     painter: &egui::Painter,
     centre: Pos2,
@@ -1158,13 +667,8 @@ pub fn glow_star(
 /// page the pane is tinted *down* towards the sunken tone instead of up
 /// towards white, and it is the sheen and the rim that put the light back.
 pub fn glass_body(opacity: f32) -> Color32 {
-    let p = pal();
-    let o = opacity.clamp(0.0, 1.0);
-    if p.dark {
-        wash(p.backdrop, (o * 205.0) as u8)
-    } else {
-        wash(p.sunken, (o * 232.0) as u8)
-    }
+    let _ = opacity;
+    pal().glass
 }
 
 /// What every control does when you reach for it.
@@ -1180,30 +684,21 @@ pub fn hover_surface(
     t: f32,
     on: bool,
 ) {
+    // NativeCompute's quiet control: a panel fill comes in under it, and a
+    // chosen one also wears a hairline in the signal colour
     let p = pal();
     let t = t.clamp(0.0, 1.0);
     if t <= 0.005 && !on {
         return;
     }
     let lit = t.max(if on { 1.0 } else { 0.0 });
-    // The ground goes *down*, not up — but not to plain black. It sinks to a
-    // well about as dark as the page itself, carrying the accent's own hue, so
-    // the thing standing in it (a rhombus, a glyph) reads against something
-    // that still belongs to the theme.
-    let well = if p.dark {
-        darken(accent, 0.88)
-    } else {
-        mix(p.sunken, darken(accent, 0.25), 0.35)
-    };
-    painter.rect_filled(
-        rect,
-        Rounding::same(radius),
-        wash(well, ((if p.dark { 225.0 } else { 190.0 }) * lit) as u8),
-    );
+    let fill = if p.dark { p.raised } else { p.sunken };
+    painter.rect_filled(rect, Rounding::same(radius), wash(fill, (255.0 * lit) as u8));
+    let edge = if on { accent } else { p.line_strong };
     painter.rect_stroke(
         rect.shrink(0.5),
         Rounding::same(radius),
-        Stroke::new(1.0_f32, wash(accent, (30.0 + 190.0 * lit) as u8)),
+        Stroke::new(1.0_f32, wash(edge, ((if on { 255.0 } else { 140.0 }) * lit) as u8)),
     );
 }
 
@@ -1215,71 +710,45 @@ pub fn hover_surface(
 /// from the top, and a lit rim. Anything that floats above the page uses this:
 /// alerts, questions, popovers, the index cards.
 pub fn glass_surface(painter: &egui::Painter, rect: Rect, radius: f32, opacity: f32) {
+    // the site's panel: opaque, a hairline round it, and a faint light along
+    // its top edge
+    let _ = opacity;
     let p = pal();
-    let radius = radius.min(rect.width() * 0.5).min(rect.height() * 0.5);
-    let o = opacity.clamp(0.0, 1.0);
-    let pts = rounded_poly(rect, radius);
+    painter.rect_filled(rect, Rounding::same(radius), p.solid_hi);
+    painter.rect_stroke(rect.shrink(0.5), Rounding::same(radius), Stroke::new(1.0_f32, p.line_strong));
+    top_edge(painter, rect);
+}
 
-    painter.rect_filled(rect, Rounding::same(radius), glass_body(o));
-    let sheen = Color32::WHITE;
-    painter.add(grad_poly_shape(
-        &pts,
-        wash(sheen, (o * if p.dark { 22.0 } else { 130.0 }) as u8),
-        wash(sheen, 0),
-        Vec2::new(0.0, 1.0),
-    ));
-
-    painter.rect_stroke(
-        rect.shrink(0.5),
-        Rounding::same(radius),
-        Stroke::new(
-            1.0_f32,
-            wash(sheen, (o * if p.dark { 26.0 } else { 140.0 }) as u8),
-        ),
-    );
+/// The inset light along a panel's top edge (`--edge` on the site).
+pub fn top_edge(painter: &egui::Painter, rect: Rect) {
+    let p = pal();
+    let a = if p.dark { 15 } else { 0 };
+    if a > 0 {
+        painter.line_segment(
+            [rect.left_top() + Vec2::new(1.0, 1.5), rect.right_top() + Vec2::new(-1.0, 1.5)],
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, a)),
+        );
+    }
 }
 
 /// Glass: a translucent plate with a soft lift down it, so it reads as a pane
 /// of something rather than a flat rectangle.
 pub fn glass_plate(painter: &egui::Painter, rect: Rect, radius: f32, opacity: f32) {
+    let _ = opacity;
     let p = pal();
-    // A pill radius is bigger than the plate; left unclamped it sends the edge
-    // highlight off in the wrong direction and draws a line across the window.
-    let radius = radius.min(rect.width() * 0.5).min(rect.height() * 0.5);
-    let base = (opacity.clamp(0.0, 1.0) * 255.0) as u8;
-    painter.rect_filled(rect, Rounding::same(radius), wash(p.glass, base));
-    grad_rect(
-        painter,
-        rect.shrink(0.5),
-        radius,
-        wash(p.glass_hi, (base as f32 * 0.34) as u8),
-        Color32::TRANSPARENT,
-        Vec2::new(0.0, 1.0),
-    );
-    painter.rect_stroke(
-        rect,
-        Rounding::same(radius),
-        Stroke::new(1.0_f32, wash(p.glass_line, 110)),
-    );
+    painter.rect_filled(rect, Rounding::same(radius), p.glass);
+    painter.rect_stroke(rect.shrink(0.5), Rounding::same(radius), Stroke::new(1.0_f32, p.line));
 }
 
 /// A solid island: opaque, rounded, hairlined, with a drop shadow so it lifts
 /// off the blurred backdrop.
 pub fn island_frame(radius: f32) -> egui::Frame {
+    // the site's panel: `--deep`, a hairline, square corners, no shadow
     let p = pal();
-    // No outline. An island is told apart from the backdrop by being opaque
-    // and by the gap around it, never by a line drawn on the seam.
     egui::Frame::none()
         .fill(p.solid)
         .rounding(Rounding::same(radius))
-        // Low and soft. A heavy drop shadow under a pane on glass reads as a
-        // smudge, not as depth.
-        .shadow(egui::epaint::Shadow {
-            offset: Vec2::new(0.0, 3.0),
-            blur: 16.0,
-            spread: 0.0,
-            color: Color32::from_black_alpha(if p.dark { 48 } else { 22 }),
-        })
+        .stroke(Stroke::new(1.0_f32, p.line))
 }
 
 /// Letter-spaced text, laid out as one run.
@@ -1319,10 +788,32 @@ pub fn tracked_text(
     (size.x - tracking).max(0.0)
 }
 
+/// The width `tracked_text` would draw `text` at.
+pub fn tracked_width(ctx: &egui::Context, text: &str, font: egui::FontId, tracking: f32) -> f32 {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            extra_letter_spacing: tracking,
+            ..Default::default()
+        },
+    );
+    let w = ctx.fonts(|f| f.layout_job(job)).rect.width();
+    (w - tracking).max(0.0)
+}
+
 /// A soft lift under something that floats: several shadows, each wider and
 /// fainter than the last, rather than one hard one or a coloured glow — the
 /// way light really falls off under a card held above a page. `lift` 0..1.
 pub fn lift_shadow(painter: &egui::Painter, rect: Rect, radius: f32, lift: f32) {
+    // nothing floats in this language: panels sit flat, told apart by their
+    // hairlines
+    if !GLOWS {
+        let _ = (painter, rect, radius, lift);
+        return;
+    }
     let p = pal();
     let lift = lift.clamp(0.0, 1.0);
     if lift <= 0.01 {
@@ -1356,22 +847,19 @@ pub fn apply(ctx: &egui::Context) {
     v.override_text_color = Some(p.text);
     v.panel_fill = Color32::TRANSPARENT;
     v.window_fill = p.solid;
-    v.extreme_bg_color = p.sunken;
+    // text fields: the site's are black with a strong hairline
+    v.extreme_bg_color = if p.dark { Color32::BLACK } else { Color32::WHITE };
     v.faint_bg_color = p.raised;
     v.window_stroke = Stroke::new(1.0_f32, p.line);
     v.window_rounding = Rounding::same(R_PANEL);
     v.menu_rounding = Rounding::same(R_MD);
-    v.selection.bg_fill = wash(p.primary, if p.dark { 70 } else { 60 });
+    v.selection.bg_fill = wash(p.primary, if p.dark { 150 } else { 90 });
     v.selection.stroke = Stroke::new(1.0_f32, p.primary);
     v.hyperlink_color = p.primary_light;
-    v.popup_shadow = egui::epaint::Shadow {
-        offset: Vec2::new(0.0, 16.0),
-        blur: 42.0,
-        spread: 0.0,
-        color: Color32::from_black_alpha(if p.dark { 190 } else { 60 }),
-    };
+    v.popup_shadow = egui::epaint::Shadow::NONE;
     v.window_shadow = v.popup_shadow;
     v.text_cursor.stroke = Stroke::new(2.0_f32, p.primary_light);
+    v.window_stroke = Stroke::new(1.0_f32, p.line_strong);
 
     let w = &mut v.widgets;
     w.noninteractive.bg_fill = p.solid;
@@ -1380,15 +868,15 @@ pub fn apply(ctx: &egui::Context) {
     w.noninteractive.fg_stroke = Stroke::new(1.0_f32, p.text_dim);
     w.noninteractive.rounding = Rounding::same(R_CTRL);
 
-    w.inactive.bg_fill = p.raised;
-    w.inactive.weak_bg_fill = p.solid_hi;
-    w.inactive.bg_stroke = Stroke::new(1.0_f32, p.line);
+    w.inactive.bg_fill = p.sunken;
+    w.inactive.weak_bg_fill = p.sunken;
+    w.inactive.bg_stroke = Stroke::new(1.0_f32, p.line_strong);
     w.inactive.fg_stroke = Stroke::new(1.0_f32, p.text);
     w.inactive.rounding = Rounding::same(R_CTRL);
 
     w.hovered.bg_fill = p.solid_hi;
     w.hovered.weak_bg_fill = p.solid_hi;
-    w.hovered.bg_stroke = Stroke::new(1.0_f32, p.primary_deep);
+    w.hovered.bg_stroke = Stroke::new(1.0_f32, p.line_strong);
     w.hovered.fg_stroke = Stroke::new(1.0_f32, p.text);
     w.hovered.rounding = Rounding::same(R_CTRL);
     w.hovered.expansion = 0.0;
@@ -1567,7 +1055,7 @@ fn c3(r: u8, g: u8, b: u8) -> Color32 {
 }
 
 /// The ink an element's text is set in on the page. Bodies sit a step down
-/// from full-strength text, as they do in Tesseract; the cues and headings
+/// from full-strength text; the cues and headings
 /// that structure the page stay at full strength.
 pub fn element_ink(e: Element) -> Color32 {
     let p = pal();
@@ -1581,13 +1069,21 @@ pub fn element_ink(e: Element) -> Color32 {
 
 // -------------------------------------------------------------------- fonts --
 
-/// Outfit ships with the app: the same geometric sans Tesseract is set in, so
-/// the two read as one family on every machine. Four weights, so `strong`
-/// really is heavier rather than just brighter.
-const OUTFIT_REGULAR: &[u8] = include_bytes!("../assets/fonts/Outfit-Regular.ttf");
-const OUTFIT_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Outfit-Medium.ttf");
-const OUTFIT_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Outfit-SemiBold.ttf");
-const OUTFIT_BOLD: &[u8] = include_bytes!("../assets/fonts/Outfit-Bold.ttf");
+/// NativeCompute's type ships with the app: Anybody for everything you read
+/// and the giant display words, JetBrains Mono for the HUD readouts. Anybody
+/// is a variable font with a width axis, which egui cannot drive, so it is
+/// cut into the fixed instances the site's type roles use (OFL; see
+/// assets/fonts).
+const ANYBODY_REGULAR: &[u8] = include_bytes!("../assets/fonts/Anybody-Regular.ttf");
+const ANYBODY_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Anybody-Medium.ttf");
+/// 600 at width 112: buttons and headings.
+const ANYBODY_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Anybody-SemiBold.ttf");
+/// 700 at width 130: section titles, numbers.
+const ANYBODY_BOLD: &[u8] = include_bytes!("../assets/fonts/Anybody-Bold.ttf");
+/// 800 at width 150: the giant words.
+const ANYBODY_DISPLAY: &[u8] = include_bytes!("../assets/fonts/Anybody-Display.ttf");
+const MONO_REGULAR: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf");
+const MONO_MEDIUM: &[u8] = include_bytes!("../assets/fonts/JetBrainsMono-Medium.ttf");
 
 /// Courier Prime, the screenwriting standard, ships with the app too: the
 /// page is the one thing whose geometry has to be exact, and a fallback
@@ -1600,13 +1096,21 @@ pub const PAGE_FONT_NAME: &str = "Courier Prime";
 
 /// The heavier cuts, reachable from `FontId::new(size, family())`.
 pub fn medium() -> FontFamily {
-    FontFamily::Name("outfit-medium".into())
+    FontFamily::Name("anybody-medium".into())
 }
 pub fn semibold() -> FontFamily {
-    FontFamily::Name("outfit-semibold".into())
+    FontFamily::Name("anybody-semibold".into())
 }
 pub fn bold() -> FontFamily {
-    FontFamily::Name("outfit-bold".into())
+    FontFamily::Name("anybody-bold".into())
+}
+/// The giant display words: 800, extended.
+pub fn display() -> FontFamily {
+    FontFamily::Name("anybody-display".into())
+}
+/// The HUD: JetBrains Mono at 500.
+pub fn hud() -> FontFamily {
+    FontFamily::Name("mono-medium".into())
 }
 /// The screenplay page.
 pub fn page() -> FontFamily {
@@ -1616,72 +1120,17 @@ pub fn page_bold() -> FontFamily {
     FontFamily::Name("page-bold".into())
 }
 
-const MONO_CANDIDATES: &[&str] = &[
-    "JetBrainsMono-Regular.ttf",
-    "CascadiaCode-Regular.ttf",
-    "FiraCode-Regular.ttf",
-    "RobotoMono-Regular.ttf",
-    "UbuntuMono-R.ttf",
-    "LiberationMono-Regular.ttf",
-    "DejaVuSansMono.ttf",
-];
-
-fn font_dirs() -> Vec<std::path::PathBuf> {
-    let mut d = vec![
-        std::path::PathBuf::from("/usr/share/fonts"),
-        std::path::PathBuf::from("/usr/local/share/fonts"),
-    ];
-    if let Some(home) = dirs::home_dir() {
-        d.push(home.join(".local/share/fonts"));
-        d.push(home.join(".fonts"));
-    }
-    d
-}
-
-fn find_font(candidates: &[&str]) -> Option<(String, Vec<u8>)> {
-    let mut stack = font_dirs();
-    let mut seen = 0usize;
-    let mut best: Option<(usize, std::path::PathBuf)> = None;
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            seen += 1;
-            if seen > 20_000 {
-                break;
-            }
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if let Some(rank) = candidates.iter().position(|c| c.eq_ignore_ascii_case(name)) {
-                if best.as_ref().map(|(r, _)| rank < *r).unwrap_or(true) {
-                    best = Some((rank, path.clone()));
-                }
-                if rank == 0 {
-                    break;
-                }
-            }
-        }
-    }
-    let (_, path) = best?;
-    let bytes = std::fs::read(&path).ok()?;
-    Some((path.file_stem()?.to_str()?.to_string(), bytes))
-}
-
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 
     for (key, bytes) in [
-        ("Outfit", OUTFIT_REGULAR),
-        ("OutfitMedium", OUTFIT_MEDIUM),
-        ("OutfitSemiBold", OUTFIT_SEMIBOLD),
-        ("OutfitBold", OUTFIT_BOLD),
+        ("Anybody", ANYBODY_REGULAR),
+        ("AnybodyMedium", ANYBODY_MEDIUM),
+        ("AnybodySemiBold", ANYBODY_SEMIBOLD),
+        ("AnybodyBold", ANYBODY_BOLD),
+        ("AnybodyDisplay", ANYBODY_DISPLAY),
+        ("JetBrainsMono", MONO_REGULAR),
+        ("JetBrainsMonoMedium", MONO_MEDIUM),
         ("CourierPrime", PAGE_REGULAR),
         ("CourierPrimeBold", PAGE_BOLD),
     ] {
@@ -1694,43 +1143,30 @@ pub fn install_fonts(ctx: &egui::Context) {
         .families
         .entry(FontFamily::Proportional)
         .or_default()
-        .insert(0, "Outfit".to_string());
+        .insert(0, "Anybody".to_string());
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .insert(0, "JetBrainsMono".to_string());
 
-    for (family, key) in [
-        (medium(), "OutfitMedium"),
-        (semibold(), "OutfitSemiBold"),
-        (bold(), "OutfitBold"),
+    let proportional = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+    let mono = fonts.families.get(&FontFamily::Monospace).cloned().unwrap_or_default();
+    for (family, key, rest) in [
+        (medium(), "AnybodyMedium", &proportional),
+        (semibold(), "AnybodySemiBold", &proportional),
+        (bold(), "AnybodyBold", &proportional),
+        (display(), "AnybodyDisplay", &proportional),
+        (hud(), "JetBrainsMonoMedium", &mono),
     ] {
-        // each heavy cut falls back to the normal stack for glyphs it lacks
+        // each cut falls back to its normal stack for glyphs it lacks
         let mut stack = vec![key.to_string()];
-        stack.extend(
-            fonts
-                .families
-                .get(&FontFamily::Proportional)
-                .cloned()
-                .unwrap_or_default(),
-        );
+        stack.extend(rest.iter().cloned());
         fonts.families.insert(family, stack);
-    }
-
-    if let Some((name, bytes)) = find_font(MONO_CANDIDATES) {
-        fonts
-            .font_data
-            .insert(name.clone(), FontData::from_owned(bytes));
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .insert(0, name);
     }
 
     // the page: Courier Prime first, then the monospace stack for anything it
     // does not carry
-    let mono = fonts
-        .families
-        .get(&FontFamily::Monospace)
-        .cloned()
-        .unwrap_or_default();
     let mut page_stack = vec!["CourierPrime".to_string()];
     page_stack.extend(mono.iter().cloned());
     fonts.families.insert(page(), page_stack.clone());
@@ -1755,6 +1191,14 @@ pub fn font_bold(size: f32) -> egui::FontId {
 }
 pub fn font_mono(size: f32) -> egui::FontId {
     egui::FontId::monospace(size)
+}
+/// A giant display word: 800, extended. Uppercase it.
+pub fn font_display(size: f32) -> egui::FontId {
+    egui::FontId::new(size, display())
+}
+/// A HUD readout: mono at 500. Uppercase it and track it.
+pub fn font_hud(size: f32) -> egui::FontId {
+    egui::FontId::new(size, hud())
 }
 pub fn font_page(size: f32) -> egui::FontId {
     egui::FontId::new(size, page())

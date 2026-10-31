@@ -108,8 +108,7 @@ fn slugs_are_filenames() {
 
 use crate::fountain;
 use crate::model::{base_character, complete, eighths_label};
-use crate::settings::{AfterExport, BlurMode, Settings, SortBy};
-use crate::theme::ThemeId;
+use crate::settings::{AfterExport, Settings, SortBy};
 
 /// The data home comes from the environment, which is process-wide, so tests
 /// that touch disk take turns and each gets a fresh directory. The lock is
@@ -403,12 +402,10 @@ fn the_pdf_can_carry_scene_numbers() {
 }
 
 #[test]
-fn settings_round_trip_and_share_tesseract_s_keys() {
+fn settings_round_trip_and_old_look_keys_are_ignored() {
     let mut s = Settings::default();
-    assert_eq!(s.theme, ThemeId::Bloodmoon, "Blackline's own red, when not following Tesseract");
-    s.theme = ThemeId::Void;
+    assert!(!s.light_mode, "dark by default");
     s.light_mode = true;
-    s.blur = BlurMode::Off;
     s.sort_by = SortBy::Length;
     s.after_export = AfterExport::Reveal;
     s.session_goal = 750;
@@ -425,35 +422,21 @@ fn settings_round_trip_and_share_tesseract_s_keys() {
     assert_eq!(d.youtrack_url, "https://markedexiled.youtrack.cloud/dashboard?id=177-0");
     assert!(d.element_colors && !d.character_colors && !d.show_details);
     assert_eq!(Settings::parse("youtrack_url =\n").youtrack_url, d.youtrack_url, "an empty link falls back");
-    s.theme = ThemeId::JetBrains;
-    assert_eq!(Settings::parse(&s.serialize()).theme, ThemeId::JetBrains);
 
-    // a file Tesseract wrote: its look is taken, nothing else
-    let tess = "theme = frostbite\nlight_mode = yes\nanimations = no\nblur = always\nglass_opacity = 0.80\nshow_grid = no\nautosave_ms = 300\n";
-    let t = Settings::parse(tess);
-    let mut mine = Settings::default();
-    assert!(mine.adopt_look(&t));
-    assert_eq!(mine.theme, ThemeId::Frostbite);
-    assert!(mine.light_mode && !mine.animations);
-    assert_eq!(mine.blur, BlurMode::Always);
-    assert!((mine.glass_opacity - 0.8).abs() < 1e-4);
-    assert_eq!(mine.autosave_ms, 1200, "how often to save is Blackline's own business");
-    assert!(!mine.adopt_look(&t), "adopting twice changes nothing");
+    // a file from before the redesign: the old look keys are read and
+    // ignored, and everything else in it still counts
+    let old = "theme = frostbite\nlight_mode = yes\nanimations = no\nblur = always\nglass_opacity = 0.80\nmatch_tesseract = yes\npage_px = 18\n";
+    let o = Settings::parse(old);
+    assert!(o.light_mode && !o.animations);
+    assert_eq!(o.page_px, 18.0);
+    let again = o.serialize();
+    for gone in ["theme", "blur", "glass_opacity", "match_tesseract"] {
+        assert!(!again.lines().any(|l| l.starts_with(&format!("{gone} ="))), "{gone} is not written back");
+    }
     // garbage never panics and never goes out of range
     let g = Settings::parse("page_px = 900\nglass_opacity = -3\nsession_goal = x\n=\n");
     assert_eq!(g.page_px, 26.0);
-    assert_eq!(g.glass_opacity, 0.35);
     assert_eq!(g.session_goal, 0);
-}
-
-#[test]
-fn tesseract_s_default_theme_is_zen_when_its_file_names_none() {
-    let _g = sandbox("tess-default");
-    let dir = storage::tesseract_settings_path();
-    std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
-    std::fs::write(&dir, "splash = no\n").unwrap();
-    let (t, _) = storage::read_tesseract_settings().expect("read");
-    assert_eq!(t.theme, ThemeId::Zen);
 }
 
 #[test]
@@ -526,17 +509,15 @@ fn odd_input_never_panics() {
     // a tint past the palette wraps rather than panicking
     let d = storage::from_markdown("## A\n<!-- scene: tint=99 | x -->\n");
     assert_eq!(d.blocks[0].tint, Some(99));
-    let _ = crate::theme::palette(ThemeId::Zen, true).group(99);
+    let _ = crate::theme::palette(true).group(99);
 }
 
 #[test]
-fn every_palette_is_complete_in_both_casts() {
-    for t in ThemeId::ALL {
-        for dark in [true, false] {
-            let p = crate::theme::palette(t, dark);
-            assert_ne!(p.text, p.solid, "{t:?}");
-            assert_eq!(p.dark, dark);
-        }
+fn the_palette_is_complete_in_both_casts() {
+    for dark in [true, false] {
+        let p = crate::theme::palette(dark);
+        assert_ne!(p.text, p.solid);
+        assert_eq!(p.dark, dark);
     }
 }
 
@@ -565,7 +546,7 @@ fn a_library_from_before_the_rename_stays_where_it_is() {
 
 #[test]
 fn every_speaker_gets_a_colour_of_their_own_that_does_not_move() {
-    crate::theme::set_palette(ThemeId::JetBrains, true);
+    crate::theme::set_palette(true);
     let names: Vec<String> = ["MARIA", "COLE", "JONAH", "ADA", "THE WRITER", "RUTH", "KAI"]
         .iter()
         .map(|s| s.to_string())
@@ -585,7 +566,7 @@ fn every_speaker_gets_a_colour_of_their_own_that_does_not_move() {
     assert_ne!(a["MARIA"], c["MARIA"]);
     // readable on the page in both casts
     for dark in [true, false] {
-        crate::theme::set_palette(ThemeId::Zen, dark);
+        crate::theme::set_palette(dark);
         for col in crate::theme::character_colors(&names, 3).values() {
             let l = 0.299 * col.r() as f32 + 0.587 * col.g() as f32 + 0.114 * col.b() as f32;
             if dark {
@@ -599,16 +580,19 @@ fn every_speaker_gets_a_colour_of_their_own_that_does_not_move() {
 }
 
 #[test]
-fn the_jetbrains_theme_is_one_of_the_set() {
-    assert_eq!(ThemeId::from_slug("jetbrains"), Some(ThemeId::JetBrains));
-    let p = crate::theme::palette(ThemeId::JetBrains, true);
-    // the near-black ground and the warm end of the arches
-    assert!(p.backdrop.r() < 0x20 && p.backdrop.g() < 0x20);
-    assert!(p.sec_grad.1.r() >= 0xE8 && p.sec_grad.1.g() > 0xA0, "marigold");
-    // warm, but never pure neon
-    assert!(p.sec_grad.1.b() > 0x30 && p.prim_grad.1.g() > 0x20);
-    assert_eq!(ThemeId::ALL.len(), 6);
+fn the_palette_is_nativecomputes() {
+    let p = crate::theme::palette(true);
+    // void black, the site's text, and one signal blue
+    assert_eq!(p.backdrop, eframe::egui::Color32::BLACK);
+    assert_eq!(p.text, eframe::egui::Color32::from_rgb(0xF2, 0xF3, 0xF7));
+    assert_eq!(p.primary, eframe::egui::Color32::from_rgb(0x3B, 0x4C, 0xFF));
+    assert_eq!(p.primary_light, eframe::egui::Color32::from_rgb(0x6E, 0x7B, 0xFF));
+    // the light cast keeps the same signal blue
+    assert_eq!(crate::theme::palette(false).primary, p.primary);
 }
+
+// square-ish corners everywhere: the site's radius is 2px
+const _: () = assert!(crate::theme::R_PILL <= 2.0 && crate::theme::R_ISLAND <= 2.0);
 
 #[test]
 fn a_tint_is_exactly_as_strong_as_asked() {
@@ -733,7 +717,7 @@ fn a_pdf_of_some_pages_has_just_those_pages() {
 fn character_inks_read_on_paper_whatever_the_app_theme() {
     let names: Vec<String> = (0..9).map(|k| format!("SPEAKER {k}")).collect();
     for dark in [true, false] {
-        crate::theme::set_palette(ThemeId::JetBrains, dark);
+        crate::theme::set_palette(dark);
         let inks = crate::theme::character_inks(&names, 5);
         let app = crate::theme::character_colors(&names, 5);
         for n in &names {
@@ -950,7 +934,7 @@ fn custom_colours_keep_the_chosen_hue_and_deal_the_rest_as_random_does() {
     use crate::theme;
     let names: Vec<String> = ["MARIA", "COLE", "JUNE"].iter().map(|s| s.to_string()).collect();
     for dark in [true, false] {
-        theme::set_palette(theme::ThemeId::Bloodmoon, dark);
+        theme::set_palette(dark);
         let random = theme::character_colors(&names, 3);
         // nothing chosen is Random, exactly
         assert_eq!(theme::voice_colors(&names, 3, &[]), random);

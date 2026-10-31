@@ -15,7 +15,6 @@ use crate::backend::{Access, EditSession, Event, Load, Member, Person, Role, Sto
 use crate::model::{Document, Element};
 use crate::settings::{AfterExport, Settings};
 use crate::storage::{self, Entry, Snapshot};
-use crate::theme::ThemeId;
 
 /// What the stand-in store remembers, shared with the test.
 #[derive(Default)]
@@ -165,7 +164,7 @@ impl Store for Memory {
         self.shared.borrow_mut().signed_out = true;
     }
     fn read_settings(&mut self) -> Settings {
-        Settings::parse("splash = no\nanimations = no\nmatch_tesseract = no\nautosave_ms = 150\n")
+        Settings::parse("splash = no\nanimations = no\nautosave_ms = 150\n")
     }
     fn write_settings(&mut self, s: &Settings) -> Result<(), String> {
         self.shared.borrow_mut().settings = Some(s.serialize());
@@ -417,11 +416,11 @@ fn a_viewer_reads_and_writes_nothing() {
 }
 
 #[test]
-fn every_team_panel_draws_in_every_theme() {
+fn every_team_panel_draws_in_both_casts() {
     let mut t = Team1::new(Role::Owner);
-    for theme in ThemeId::ALL {
+    {
         for light in [false, true] {
-            t.app.debug_set_theme(theme, light);
+            t.app.debug_set_light(light);
             t.app.debug_go_home();
             t.frames(3);
             t.app.debug_open_settings(7);

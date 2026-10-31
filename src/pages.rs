@@ -196,15 +196,15 @@ pub fn show(
     let char_w = 6.0 * inch / PAGE_COLS as f32;
     let font = theme::font_page(font_px);
     let bold = theme::font_page_bold(font_px);
-    let paper = if p.dark { p.raised } else { p.solid };
+    let paper = if p.dark { p.solid_hi } else { p.solid };
     let ink = if p.dark { theme::mix(p.text, p.text_dim, 0.1) } else { p.text };
     let a = |c: egui::Color32| theme::wash(c, (c.a() as f32 * fade) as u8);
 
     let mut jump = None;
     {
         let painter = ui.painter();
-        theme::lift_shadow(painter, sheet, theme::R_SM, fade);
         painter.rect_filled(sheet, egui::Rounding::same(theme::R_SM), a(paper));
+        painter.rect_stroke(sheet.shrink(0.5), egui::Rounding::same(theme::R_SM), egui::Stroke::new(1.0_f32, a(p.line)));
     }
     let text_left = sheet.left() + 1.5 * inch;
     let body_top = sheet.top() + inch;
@@ -248,8 +248,8 @@ pub fn show(
                 if hot > 0.01 {
                     ui.painter().rect_filled(
                         hit.expand2(Vec2::new(3.0, 0.0)),
-                        egui::Rounding::same(3.0),
-                        theme::wash(p.primary, (28.0 * hot) as u8),
+                        egui::Rounding::ZERO,
+                        theme::wash(p.primary, (40.0 * hot) as u8),
                     );
                 }
                 if resp.hovered() {
@@ -296,24 +296,20 @@ pub fn show(
         }
     }
 
-    // ---- the control at the foot: previous, where you are, next ----
+    // ---- the HUD strip at the foot: previous, where you are, next ----
     let label = if st.current == 0 {
-        format!("Title page  ·  {} pages", st.sheets - 1)
+        format!("TITLE PAGE / {:02} PP", st.sheets - 1)
     } else {
-        format!("Page {} of {}", st.current, st.sheets - 1)
+        format!("PAGE {:02} / {:02}", st.current, st.sheets - 1)
     };
-    let text_w = ui
-        .painter()
-        .layout_no_wrap(label.clone(), theme::font_med(theme::T_LABEL), p.text)
-        .rect
-        .width();
+    let hud = theme::font_hud(theme::T_CAP);
+    let text_w = theme::tracked_width(ui.ctx(), &label, hud.clone(), 0.9);
     let bar_w = text_w.max(118.0) + 2.0 * 30.0 + 28.0;
     let bar = Rect::from_center_size(
         Pos2::new(area.center().x, area.bottom() - FOOT * 0.5 - 2.0),
         Vec2::new(bar_w, 34.0),
     );
-    theme::lift_shadow(ui.painter(), bar, bar.height() * 0.5, 0.6);
-    theme::glass_surface(ui.painter(), bar, bar.height() * 0.5, 0.94);
+    theme::glass_surface(ui.painter(), bar, theme::R_SM, 1.0);
     let mut foot = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(bar.shrink2(Vec2::new(6.0, 2.0)))
@@ -329,12 +325,13 @@ pub fn show(
         Vec2::new(foot.available_width() - 32.0, 28.0),
         Sense::hover(),
     );
-    foot.painter().text(
-        mid.center(),
-        egui::Align2::CENTER_CENTER,
+    theme::tracked_text(
+        foot.painter(),
+        Pos2::new(mid.center().x - text_w * 0.5, mid.center().y),
         &label,
-        theme::font_med(theme::T_LABEL),
+        hud,
         p.text_dim,
+        0.9,
     );
     if ui::icon_button(&mut foot, Icon::ChevronRight, "Next page  ·  →", 28.0) && can_fwd {
         st.turn_to(st.current + 1);

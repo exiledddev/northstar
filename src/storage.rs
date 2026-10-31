@@ -102,12 +102,6 @@ pub fn settings_path() -> PathBuf {
     library_root().join("settings.conf")
 }
 
-/// Tesseract's own settings, for following its theme.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn tesseract_settings_path() -> PathBuf {
-    data_home().join("tesseract").join("settings.conf")
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 pub fn ensure_dirs() -> io::Result<()> {
     fs::create_dir_all(scripts_dir())?;
@@ -564,17 +558,6 @@ pub fn read_settings() -> Settings {
 pub fn write_settings(s: &Settings) -> io::Result<()> {
     fs::create_dir_all(library_root())?;
     fs::write(settings_path(), s.serialize())
-}
-
-/// Tesseract's settings, if Tesseract is installed and has been run. Read
-/// with the same parser — the keys the two apps share are spelled the same.
-#[cfg(not(target_arch = "wasm32"))]
-pub fn read_tesseract_settings() -> Option<(Settings, SystemTime)> {
-    let path = tesseract_settings_path();
-    let when = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
-    let text = fs::read_to_string(&path).ok()?;
-    // Tesseract's own default theme is Zen; a file that never names one means it
-    Some((Settings::parse(&format!("theme = zen\n{text}")), when))
 }
 
 // ---------- the desktop ----------

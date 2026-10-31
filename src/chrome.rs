@@ -2,9 +2,9 @@
 //!
 //! Blackline asks for no decorations, so it draws its own: a slim title bar
 //! with the mark, the name and the three window buttons, and invisible grips
-//! along the edges for resizing. The whole window is one sheet of glass with
-//! rounded corners; the islands are opaque and float on it, with nothing but
-//! backdrop in the gaps between them — no frames, no hairlines, no seams.
+//! along the edges for resizing. The window is void black, with the faint
+//! column guides of NativeCompute's site drawn across it — the "technical
+//! drawing" grid — and the panels sit on it as hairlined slabs.
 
 use eframe::egui::{self, Pos2, Rect, Sense, Stroke, Vec2, ViewportCommand};
 
@@ -21,15 +21,15 @@ pub fn maximized(ctx: &egui::Context) -> bool {
     crate::WEB || ctx.input(|i| i.viewport().maximized.unwrap_or(false))
 }
 
-/// The one glass sheet the whole window sits on, with the window's own
-/// rounded corners. A maximised window squares off, the way every other app
-/// on the desktop does.
+/// The ground the whole window sits on: the fill, and the site's six faint
+/// column guides inside a gutter.
 pub fn backdrop(ctx: &egui::Context, fill: egui::Color32) {
     let p = pal();
     let rect = ctx.screen_rect();
     let r = if maximized(ctx) { 0.0 } else { theme::R_WINDOW };
     let painter = ctx.layer_painter(egui::LayerId::background());
     painter.rect_filled(rect, egui::Rounding::same(r), fill);
+    column_guides(&painter, rect);
     if crate::WEB {
         // a browser tab's edge is the browser's
         return;
@@ -40,6 +40,29 @@ pub fn backdrop(ctx: &egui::Context, fill: egui::Color32) {
         egui::Rounding::same(r),
         Stroke::new(1.0_f32, theme::wash(if p.dark { egui::Color32::WHITE } else { p.line_strong }, if p.dark { 26 } else { 90 })),
     );
+}
+
+/// The six column guides: hairlines at a few percent, from the left gutter
+/// across, the way the site's `body::before` draws them.
+pub fn column_guides(painter: &egui::Painter, rect: Rect) {
+    let p = pal();
+    let gutter = if rect.width() > 900.0 { 40.0 } else { 16.0 };
+    let col = if p.dark {
+        egui::Color32::from_rgba_unmultiplied(255, 255, 255, 9)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(0, 0, 0, 12)
+    };
+    let span = rect.width() - 2.0 * gutter;
+    if span <= 0.0 {
+        return;
+    }
+    for i in 0..6 {
+        let x = (rect.left() + gutter + span * i as f32 / 6.0).round() + 0.5;
+        painter.line_segment(
+            [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+            Stroke::new(1.0_f32, col),
+        );
+    }
 }
 
 /// The title bar. The window buttons act on the viewport directly; `extra` is
@@ -69,19 +92,16 @@ pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, extra: impl FnOnce(&mut
     row.spacing_mut().item_spacing.x = 9.0;
     row.add_space(2.0);
 
-    let (mark, _) = row.allocate_exact_size(Vec2::splat(17.0), Sense::hover());
-    // no glow on the mark here: it has nothing to light
+    // the site's brand lock-up: the mark, then the name in mixed case
+    row.spacing_mut().item_spacing.x = 6.0;
+    let (mark, _) = row.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
     logo::paint(row.painter(), mark, 0.0);
-    let painter = row.painter().clone();
-    let (name, _) = row.allocate_exact_size(Vec2::new(96.0, TITLE_H), Sense::hover());
-    theme::tracked_text(
-        &painter,
-        Pos2::new(name.left(), name.center().y),
-        "BLACKLINE",
-        theme::font_semi(10.5),
-        p.text_dim,
-        1.7,
+    row.label(
+        egui::RichText::new("Blackline")
+            .font(egui::FontId::new(15.0, theme::semibold()))
+            .color(p.text),
     );
+    row.spacing_mut().item_spacing.x = 9.0;
 
     row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
@@ -116,13 +136,15 @@ fn window_button(ui: &mut egui::Ui, glyph: Glyph, tint: egui::Color32) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(30.0, 24.0), Sense::click());
     let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
     if hot > 0.01 {
-        ui.painter().rect_filled(
-            rect.shrink2(Vec2::new(4.0, 3.0)),
-            egui::Rounding::same(6.0),
-            theme::wash(tint, (70.0 * hot) as u8),
-        );
+        // close goes the danger colour; the others take a panel fill
+        let fill = if glyph == Glyph::Close {
+            theme::wash(tint, (200.0 * hot) as u8)
+        } else {
+            theme::wash(p.raised, (255.0 * hot) as u8)
+        };
+        ui.painter().rect_filled(rect.shrink2(Vec2::new(3.0, 2.0)), egui::Rounding::same(theme::R_SM), fill);
     }
-    let ink = theme::mix(p.text_faint, if glyph == Glyph::Close { theme::lighten(tint, 0.4) } else { p.text }, hot);
+    let ink = theme::mix(p.text_dim, if glyph == Glyph::Close { egui::Color32::BLACK } else { p.text }, hot);
     let c = rect.center();
     let s = 4.6;
     let stroke = Stroke::new(1.3_f32, ink);
@@ -136,14 +158,14 @@ fn window_button(ui: &mut egui::Ui, glyph: Glyph, tint: egui::Color32) -> bool {
         Glyph::Max => {
             ui.painter().rect_stroke(
                 Rect::from_center_size(c, Vec2::splat(s * 1.9)),
-                egui::Rounding::same(2.0),
+                egui::Rounding::ZERO,
                 stroke,
             );
         }
         Glyph::Restore => {
             ui.painter().rect_stroke(
                 Rect::from_center_size(c + Vec2::new(-1.2, 1.2), Vec2::splat(s * 1.7)),
-                egui::Rounding::same(2.0),
+                egui::Rounding::ZERO,
                 stroke,
             );
             ui.painter().line_segment(

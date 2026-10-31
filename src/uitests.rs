@@ -1,6 +1,5 @@
 //! Headless UI tests. egui runs without a window, so these build a real App,
-//! feed it synthetic clicks, drags and keystrokes, and read back what it did —
-//! the same harness Tesseract is tested with.
+//! feed it synthetic clicks, drags and keystrokes, and read back what it did.
 
 use std::time::Duration;
 
@@ -9,7 +8,7 @@ use crate::editor;
 use crate::model::{Document, Element};
 use crate::storage;
 use crate::tests::VAULT;
-use crate::theme::{self, ThemeId};
+use crate::theme;
 use eframe::egui::{self, pos2, vec2, Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect};
 
 static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -31,7 +30,7 @@ fn sandbox(settings: &str) -> std::sync::MutexGuard<'static, ()> {
     // No splash and no easing, so a frame is a frame.
     let _ = std::fs::write(
         dir.join("blackline/settings.conf"),
-        format!("splash = no\nanimations = no\nmatch_tesseract = no\nautosave_ms = 150\n{settings}"),
+        format!("splash = no\nanimations = no\nautosave_ms = 150\n{settings}"),
     );
     guard
 }
@@ -568,38 +567,16 @@ fn the_settings_panel_opens_from_the_ribbon() {
 }
 
 #[test]
-fn blackline_follows_tesseract_s_theme_live() {
-    let mut h = Harness::with(1320.0, 900.0, "match_tesseract = yes\n");
-    let tess = storage::tesseract_settings_path();
-    std::fs::create_dir_all(tess.parent().unwrap()).unwrap();
-    std::fs::write(&tess, "theme = void\nlight_mode = yes\n").unwrap();
-    // it looks again every second and a half
-    std::thread::sleep(Duration::from_millis(1600));
-    h.frames(2);
-    assert_eq!(theme::pal().id, ThemeId::Void);
-    assert!(!theme::pal().dark);
-    // Tesseract changes its mind; Blackline follows
-    std::thread::sleep(Duration::from_millis(1100));
-    std::fs::write(&tess, "theme = ember\nlight_mode = no\n").unwrap();
-    std::thread::sleep(Duration::from_millis(1600));
-    h.frames(2);
-    assert_eq!(theme::pal().id, ThemeId::Ember);
-    assert!(theme::pal().dark);
-}
-
-#[test]
-fn every_theme_paints_every_view_without_panicking() {
+fn both_casts_paint_every_view_without_panicking() {
     let mut h = Harness::new();
     h.load(three_scenes());
-    for t in ThemeId::ALL {
-        for light in [false, true] {
-            h.app.debug_set_theme(t, light);
-            for m in [Mode::Write, Mode::Cards, Mode::Read] {
-                h.app.set_mode(m);
-                h.frames(2);
-            }
-            assert_eq!(theme::pal().id, t);
+    for light in [false, true] {
+        h.app.debug_set_light(light);
+        for m in [Mode::Write, Mode::Cards, Mode::Read] {
+            h.app.set_mode(m);
+            h.frames(2);
         }
+        assert_eq!(theme::pal().dark, !light);
     }
 }
 
@@ -655,9 +632,9 @@ fn the_library_foot_ends_level_with_the_other_islands() {
     );
     let aside = h.app.debug_aside_rect();
     assert!((aside.bottom() - page.bottom()).abs() < 1.5);
-    h.app.debug_set_theme(ThemeId::JetBrains, false);
+    h.app.debug_set_light(true);
     h.frames(2);
-    assert_eq!(theme::pal().id, ThemeId::JetBrains);
+    assert!(!theme::pal().dark);
 }
 
 #[test]

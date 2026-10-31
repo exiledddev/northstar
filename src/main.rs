@@ -1,8 +1,8 @@
-//! Blackline on the desktop — a screenwriting studio for Linux.
+//! Blackline on the desktop — a screenwriting studio.
 //!
 //! Scripts are plain markdown on disk; the editor formats them to standard
-//! master-scene screenplay geometry and exports print-ready PDF. Drawn in the
-//! design language it shares with Tesseract.
+//! master-scene screenplay geometry and exports print-ready PDF. Drawn in
+//! NativeCompute's design language.
 //!
 //! NativeCompute.
 
@@ -17,7 +17,7 @@ fn main() -> eframe::Result<()> {
             .get(i + 1)
             .cloned()
             .unwrap_or_else(|| "blackline.svg".to_string());
-        theme::set_palette(theme::ThemeId::Bloodmoon, true);
+        theme::set_palette(true);
         match std::fs::write(&path, logo::svg()) {
             Ok(()) => println!("wrote {path}"),
             Err(e) => eprintln!("could not write {path}: {e}"),

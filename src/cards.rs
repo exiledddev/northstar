@@ -1,11 +1,10 @@
 //! Cards: the script as a wall of index cards, one per scene.
 //!
-//! A card is glass laid over the page, the way everything that floats over
-//! the work is glass in this design — lit from the object outward, lifting
-//! when you reach for it, with the scene's colour as a dot and a breath of
-//! tint through the pane rather than a painted bar. Drag a card by its head
-//! to move the whole scene; write the synopsis straight onto it. An act opens
-//! a new row of the wall with a ribbon across it.
+//! A card is one of the site's panels: opaque, hairlined, its scene number
+//! set big in the display face and its details as HUD readouts, with the
+//! scene's colour as a bar down its edge. Drag a card by its head to move the
+//! whole scene; write the synopsis straight onto it. An act opens a new row
+//! of the wall with a chapter heading across it.
 
 use eframe::egui::{self, Pos2, Rect, Sense, Vec2};
 
@@ -220,26 +219,31 @@ pub fn show(
     st.new_card_rect = Some(nr);
     let resp = ui.interact(nr, egui::Id::new("ns-card-new"), Sense::click());
     let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
-    ui.painter().rect_filled(
-        nr,
+    // an empty slot: the hairline only, a panel fill coming in from the
+    // left as you reach for it, like the site's ghost button
+    ui::wipe(ui.painter(), nr, hot, if p.dark { p.raised } else { p.sunken });
+    ui.painter().rect_stroke(
+        nr.shrink(0.5),
         egui::Rounding::same(theme::R_CARD),
-        theme::wash(p.text_faint, (18.0 + 10.0 * (1.0 - hot)) as u8),
+        egui::Stroke::new(1.0_f32, theme::mix(p.line, p.text_faint, hot)),
     );
-    theme::hover_surface(ui.painter(), nr, theme::R_CARD, p.sec, hot, false);
     let c = nr.center();
-    theme::grad_star(
+    crate::icons::draw(
         ui.painter(),
-        c - Vec2::new(0.0, 12.0),
-        8.0 + 1.0 * hot,
-        theme::mix(p.sec_grad.0, theme::lighten(p.sec_grad.0, 0.3), hot),
-        theme::mix(p.sec_grad.1, theme::lighten(p.sec_grad.1, 0.3), hot),
-    );
-    ui.painter().text(
-        c + Vec2::new(0.0, 14.0),
-        egui::Align2::CENTER_CENTER,
-        "New scene",
-        theme::font_semi(theme::T_SM),
+        Rect::from_center_size(c - Vec2::new(0.0, 12.0), Vec2::splat(16.0)),
+        Icon::Plus,
         theme::mix(p.text_dim, p.text, hot),
+    );
+    let label = "NEW SCENE";
+    let font = theme::font_hud(theme::T_CAP);
+    let lw = theme::tracked_width(ui.ctx(), label, font.clone(), 0.9);
+    theme::tracked_text(
+        ui.painter(),
+        Pos2::new(c.x - lw * 0.5, c.y + 14.0),
+        label,
+        font,
+        theme::mix(p.text_dim, p.text, hot),
+        0.9,
     );
     if resp.on_hover_text("A new scene at the end · Ctrl+Enter in the script").clicked() {
         out.act = Some(Act::NewScene);
@@ -284,8 +288,7 @@ pub fn show(
             let moving = at != from && at != from + 1;
             if moving {
                 // where it will land: the one light that has a job to do
-                theme::glow_rect(ui.painter(), bar, 1.5, p.sec_light, 10.0, 0.4);
-                ui.painter().rect_filled(bar, egui::Rounding::same(1.5), p.sec_light);
+                ui.painter().rect_filled(bar, egui::Rounding::ZERO, p.primary_light);
             }
 
             // the card itself, following the pointer
@@ -297,9 +300,13 @@ pub fn show(
                     .interactable(false)
                     .show(ui.ctx(), |ui| {
                         let (r, _) = ui.allocate_exact_size(ghost.size(), Sense::hover());
-                        theme::lift_shadow(ui.painter(), r, r.height() * 0.5, 1.0);
-                        theme::glass_surface(ui.painter(), r, r.height() * 0.5, 0.96);
-                        theme::grad_star(ui.painter(), Pos2::new(r.left() + 20.0, r.center().y), 5.5, p.sec_grad.0, p.sec_grad.1);
+                        theme::glass_surface(ui.painter(), r, theme::R_CARD, 1.0);
+                        ui.painter().rect_stroke(r.shrink(0.5), egui::Rounding::same(theme::R_CARD), egui::Stroke::new(1.0_f32, p.primary_light));
+                        ui.painter().rect_filled(
+                            Rect::from_center_size(Pos2::new(r.left() + 20.0, r.center().y), Vec2::splat(7.0)),
+                            egui::Rounding::ZERO,
+                            p.primary_light,
+                        );
                         ui.painter().text(
                             Pos2::new(r.left() + 34.0, r.center().y),
                             egui::Align2::LEFT_CENTER,
@@ -374,61 +381,41 @@ pub fn show(
     out
 }
 
-/// An act's ribbon across the wall: its star in the primary gradient, its
-/// title tracked, what it holds, and a horizon running out to the right — the
-/// act's divider in the script, in small. Returns true when clicked.
+/// An act's ribbon across the wall: the script's chapter heading in small —
+/// the signal square, the title in the display face, a HUD readout of what it
+/// holds, and a hairline running out to the right. Returns true when clicked.
 fn act_ribbon(ui: &mut egui::Ui, rect: Rect, a: &ActSpan, note: &str) -> bool {
     let p = pal();
     let resp = ui.interact(rect, egui::Id::new(("ns-act-ribbon", a.id)), Sense::click());
     let hot = anim::ease(ui.ctx(), resp.id, resp.hovered(), anim::HOVER);
-    let k = if p.dark { 1.0 } else { 0.8 };
-    // a whisper of both gradients, fading out to the right
-    theme::fill_grad_poly(
-        ui.painter(),
-        &theme::rounded_poly(rect, theme::R_CARD),
-        theme::tint(p.prim_grad.1, (0.10 + 0.05 * hot) * k),
-        theme::tint(p.sec_grad.1, 0.0),
-        Vec2::new(1.0, 0.0),
-    );
     let cy = rect.center().y;
-    let star = Pos2::new(rect.left() + 22.0, cy);
-    if hot > 0.01 {
-        theme::glow_star(ui.painter(), star, 6.0, p.prim_grad.1, 14.0, 0.18 * hot);
-    }
-    theme::grad_star(ui.painter(), star, 7.0, p.prim_grad.0, p.prim_grad.1);
-    let title = if a.title.trim().is_empty() { act_title(a.number) } else { a.title.trim().to_string() };
-    let w = theme::tracked_text(
-        ui.painter(),
-        Pos2::new(rect.left() + 40.0, cy),
-        &title,
-        theme::font_semi(theme::T_BODY),
-        p.text,
-        2.4,
+    ui.painter().rect_filled(
+        Rect::from_center_size(Pos2::new(rect.left() + 10.0, cy), Vec2::splat(7.0)),
+        egui::Rounding::ZERO,
+        theme::mix(p.primary_light, p.text, hot),
     );
-    let mut x = rect.left() + 40.0 + w + 14.0;
+    let title = if a.title.trim().is_empty() { act_title(a.number) } else { a.title.trim().to_string() };
+    let g = ui
+        .painter()
+        .layout_no_wrap(title.to_uppercase(), theme::font_display(20.0), p.text);
+    let w = g.rect.width();
+    ui.painter().galley(Pos2::new(rect.left() + 24.0, cy - g.rect.height() * 0.5), g, p.text);
+    let mut x = rect.left() + 24.0 + w + 16.0;
     if !note.is_empty() {
-        let g = ui.painter().layout_no_wrap(note.to_string(), theme::font(theme::T_CAP), p.text_faint);
-        let nw = g.rect.width();
+        let font = theme::font_hud(theme::T_MICRO + 0.5);
+        let up = note.to_uppercase();
+        let nw = theme::tracked_width(ui.ctx(), &up, font.clone(), 0.8);
         if x + nw + 40.0 < rect.right() {
-            ui.painter().galley(Pos2::new(x, cy - g.rect.height() * 0.5), g, p.text_faint);
-            x += nw + 14.0;
+            theme::tracked_text(ui.painter(), Pos2::new(x, cy), &up, font, p.text_faint, 0.8);
+            x += nw + 16.0;
         }
     }
-    // the horizon
-    let end = rect.right() - 16.0;
+    let end = rect.right() - 8.0;
     if end - x > 24.0 {
-        let line = theme::wash(theme::mix(p.text_faint, p.primary_light, 0.4), 120);
-        theme::fill_grad_poly(
-            ui.painter(),
-            &[
-                Pos2::new(x, cy - 0.5),
-                Pos2::new(end, cy - 0.5),
-                Pos2::new(end, cy + 0.5),
-                Pos2::new(x, cy + 0.5),
-            ],
-            line,
-            theme::wash(line, 0),
-            Vec2::new(1.0, 0.0),
+        let y = cy.round() + 0.5;
+        ui.painter().line_segment(
+            [Pos2::new(x, y), Pos2::new(end, y)],
+            egui::Stroke::new(1.0_f32, theme::mix(p.line, p.line_strong, hot)),
         );
     }
     if resp.hovered() {
@@ -453,93 +440,67 @@ fn draw_card(
     let painter = ui.painter();
     let radius = theme::R_CARD;
 
-    // A card lifts on a layered shadow when you reach for it; only on a dark
-    // page does it catch a faint light of its own colour as well. The scene
-    // you are in is marked by its outline, not by light.
-    theme::lift_shadow(painter, r, radius, (0.35 + 0.65 * lift) * fade);
-    if p.dark && lift > 0.01 {
-        theme::glow_rect(painter, r, radius, accent, 16.0, 0.10 * lift * fade);
-    }
-    if p.dark {
-        theme::glass_surface(painter, r, radius, (if selected { 0.96 } else { 0.86 }) * fade);
-    } else {
-        // light glass over the white island is tinted down to grey; a card
-        // wants to be paper — a contact shadow, a white body, a lit rim
-        painter.rect_filled(
-            r.translate(Vec2::new(0.0, 2.0)),
-            egui::Rounding::same(radius),
-            egui::Color32::from_black_alpha((16.0 * fade) as u8),
-        );
-        painter.rect_filled(r, egui::Rounding::same(radius), theme::wash(p.raised, (255.0 * fade) as u8));
-        painter.rect_stroke(
-            r.shrink(0.5),
-            egui::Rounding::same(radius),
-            egui::Stroke::new(1.0_f32, theme::wash(p.line, (255.0 * fade) as u8)),
-        );
-    }
+    // The site's panel: an opaque fill, a hairline that goes strong as you
+    // reach for it, the inset top edge, and the light signal blue round the
+    // scene you are in.
+    let _ = accent;
+    let w = |c: egui::Color32| theme::wash(c, (c.a() as f32 * fade) as u8);
+    painter.rect_filled(r, egui::Rounding::same(radius), w(theme::mix(p.solid_hi, p.raised, 0.6 * lift)));
+    painter.rect_stroke(
+        r.shrink(0.5),
+        egui::Rounding::same(radius),
+        egui::Stroke::new(
+            1.0_f32,
+            w(if selected { p.primary_light } else { theme::mix(p.line, p.text_faint, lift) }),
+        ),
+    );
+    theme::top_edge(painter, r);
     if let Some(t) = tint {
-        // the scene's colour as a breath through the glass
-        theme::fill_grad_poly(
-            painter,
-            &theme::rounded_poly(r, radius),
-            theme::wash(t, ((if p.dark { 44.0 } else { 34.0 }) * fade) as u8),
-            theme::wash(t, 0),
-            Vec2::new(0.35, 1.0),
-        );
-    }
-    if selected {
-        painter.rect_stroke(
-            r.shrink(0.5),
-            egui::Rounding::same(radius),
-            egui::Stroke::new(1.4_f32, theme::wash(p.primary_light, (220.0 * fade) as u8)),
+        // the scene's colour as a bar down the card's left edge
+        painter.rect_filled(
+            Rect::from_min_size(r.min + Vec2::new(1.0, 1.0), Vec2::new(3.0, r.height() - 2.0)),
+            egui::Rounding::ZERO,
+            w(t),
         );
     }
 
-    // head: the star, the number, the heading
+    // head: the number set big in the display face, then the heading
     let cy = r.top() + HEAD_H * 0.5 + 2.0;
-    let star = Pos2::new(r.left() + 20.0, cy);
-    theme::grad_star(painter, star, 5.6, p.sec_grad.0, p.sec_grad.1);
-    let num = format!("{}", sc.number);
-    painter.text(
-        Pos2::new(r.left() + 33.0, cy),
-        egui::Align2::LEFT_CENTER,
-        &num,
-        theme::font_mono(theme::T_MICRO),
-        theme::wash(p.text_faint, (255.0 * fade) as u8),
-    );
+    let num_col = theme::wash(p.primary_light, (255.0 * fade) as u8);
+    let ng = painter.layout_no_wrap(format!("{:02}", sc.number), theme::font_display(18.0), num_col);
+    let num_w = ng.rect.width();
+    painter.galley(Pos2::new(r.left() + 14.0, cy - ng.rect.height() * 0.5), ng, num_col);
     let heading = if sc.heading.trim().is_empty() {
         "Untitled scene".to_string()
     } else {
         sc.heading.clone()
     };
-    let right_pad = if tint.is_some() { 26.0 } else { 14.0 };
+    let head_x = r.left() + 14.0 + num_w + 10.0;
     painter.text(
-        Pos2::new(r.left() + 33.0 + 8.0 * num.len() as f32 + 6.0, cy),
+        Pos2::new(head_x, cy),
         egui::Align2::LEFT_CENTER,
-        ui::elide(&heading, ((r.width() - 56.0 - right_pad) / 7.8) as usize),
+        ui::elide(&heading, ((r.right() - head_x - 14.0) / 7.8) as usize),
         theme::font_semi(theme::T_SM),
         theme::wash(p.text, (255.0 * fade) as u8),
     );
-    if let Some(t) = tint {
-        painter.circle_filled(Pos2::new(r.right() - 16.0, cy), 3.4, theme::wash(t, (255.0 * fade) as u8));
-    }
 
     // foot: where it falls and who is in it
     let (page, eighths) = lengths.get(&sc.id).copied().unwrap_or((0, 0));
     let mut foot = if page > 0 {
-        format!("p.{page} · {} pg", eighths_label(eighths))
+        format!("p.{page} / {} pg", eighths_label(eighths))
     } else {
         "not on the page yet".to_string()
     };
     if !sc.cast.is_empty() {
-        foot.push_str(" · ");
+        foot.push_str(" / ");
         foot.push_str(&sc.cast.join(", "));
     }
-    painter.text(
-        Pos2::new(r.left() + 16.0, r.bottom() - 16.0),
-        egui::Align2::LEFT_CENTER,
-        ui::elide(&foot, ((r.width() - 32.0) / 6.2) as usize),
-        theme::font_mono(theme::T_MICRO),
+    theme::tracked_text(
+        painter,
+        Pos2::new(r.left() + 14.0, r.bottom() - 16.0),
+        &ui::elide(&foot, ((r.width() - 28.0) / 7.0) as usize).to_uppercase(),
+        theme::font_hud(theme::T_MICRO),
         theme::wash(p.text_faint, (255.0 * fade) as u8),
+        0.6,
     );
 }
