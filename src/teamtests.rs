@@ -212,7 +212,7 @@ impl Team1 {
         }
         let me = sam();
         let team = Team {
-            name: "MarkedExiled Software".into(),
+            name: "NativeCompute".into(),
             me: me.clone(),
             role,
             members: vec![
@@ -696,7 +696,7 @@ fn a_shortcut_of_your_own_is_kept_and_reset_puts_back_the_default() {
     assert!(t.app.debug_settings_open());
     assert_eq!(t.app.settings().keys.label(Command::Save, false), "Ctrl+S");
 
-    // Reset all: Northstar's own again
+    // Reset all: Blackline's own again
     t.app.settings_mut().keys.reset_all();
     t.frames(2);
     assert!(t.app.settings().keys.is_default());

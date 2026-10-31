@@ -15,7 +15,7 @@
 //! glow are built from).
 
 // The shared kit is kept whole and in step with Tesseract's copy: a
-// primitive with no caller in Northstar today is still part of the language.
+// primitive with no caller in Blackline today is still part of the language.
 #![allow(dead_code)]
 
 use std::sync::RwLock;
@@ -37,7 +37,7 @@ pub enum ThemeId {
     Frostbite,
     Bloodmoon,
     Void,
-    /// Northstar's own addition: orange into magenta into violet, on
+    /// Blackline's own addition: orange into magenta into violet, on
     /// JetBrains' near-black.
     JetBrains,
 }
@@ -1071,7 +1071,7 @@ pub fn glow_diamond(
             .collect()
     });
 }
-/// The four points of Northstar's star, clockwise from the top, with the
+/// The four points of Blackline's star, clockwise from the top, with the
 /// waist between each pair. `waist` is the inner radius as a fraction of `r`.
 pub fn star_points(centre: Pos2, r: f32, waist: f32) -> [Pos2; 8] {
     let w = r * waist * std::f32::consts::FRAC_1_SQRT_2;
@@ -1087,7 +1087,7 @@ pub fn star_points(centre: Pos2, r: f32, waist: f32) -> [Pos2; 8] {
     ]
 }
 
-/// A four-pointed star — Northstar's marker, where Tesseract has its rhombus —
+/// A four-pointed star — Blackline's marker, where Tesseract has its rhombus —
 /// filled with a gradient.
 ///
 /// A star is not convex, so it is laid down as four kites (tip, waist, centre,

@@ -2,7 +2,7 @@
 //!
 //! Fountain is the plain-text screenplay format Highland, Beat, Slugline and
 //! afterwriting all speak; Final Draft's `.fdx` is the industry's XML. Both are
-//! read into the same typed blocks Northstar writes, so an imported script is
+//! read into the same typed blocks Blackline writes, so an imported script is
 //! an ordinary script from the moment it lands.
 
 use crate::model::{Document, Element, Meta};
@@ -15,7 +15,7 @@ use crate::model::{Document, Element, Meta};
 /// blank one with something straight under it. Notes and boneyard are
 /// dropped; synopses (`= ...`) become the scene's card. A top-level section
 /// (`# ACT ONE`), or a centred act title (`>ACT ONE<`, `>TEASER<`), starts an
-/// act; a centred `>END OF ACT ONE<` is the act's close, which Northstar
+/// act; a centred `>END OF ACT ONE<` is the act's close, which Blackline
 /// prints by itself, so it is not kept twice.
 pub fn parse(text: &str) -> Document {
     let text = strip_between(&strip_between(text, "/*", "*/"), "[[", "]]");
@@ -305,7 +305,7 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 }
 
 /// Read a Final Draft file. Paragraph types map one to one; anything Final
-/// Draft has that Northstar does not (General, Cast List...) becomes action.
+/// Draft has that Blackline does not (General, Cast List...) becomes action.
 pub fn parse_fdx(text: &str) -> Document {
     let mut doc = Document::from_parts(Meta::default(), Vec::new());
     doc.blocks.clear();
@@ -334,7 +334,7 @@ pub fn parse_fdx(text: &str) -> Document {
         rest = &body_from[end + "</Paragraph>".len()..];
 
         let kind = attr(tag, "Type").unwrap_or_default();
-        // the close of an act is printed by Northstar itself
+        // the close of an act is printed by Blackline itself
         if kind == "End of Act" {
             continue;
         }

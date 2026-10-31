@@ -9,7 +9,7 @@
 //! The look follows the design language Tesseract set down: the
 //! page is the island itself, so nothing here draws a box. The block you are
 //! in gets a wash of the accent that fades away to the right; a scene heading
-//! carries a four-pointed star in the gutter — Northstar's marker, standing
+//! carries a four-pointed star in the gutter — Blackline's marker, standing
 //! where Tesseract has its rhombus — that lights while you are in its scene;
 //! and where a printed page will break, a rule fades in and out of nothing.
 //!
@@ -819,7 +819,7 @@ fn act_row(
         for stars in &mut sides {
             stars.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
             for w in stars.windows(2) {
-                painter.line_segment([w[0].0, w[1].0], egui::Stroke::new(0.5, line));
+                painter.line_segment([w[0].0, w[1].0], egui::Stroke::new(0.5_f32, line));
             }
         }
         let star_ink = theme::mix(p.text, p.primary_light, 0.3);
@@ -939,7 +939,7 @@ fn act_row(
     output
 }
 
-/// The star in a scene heading's gutter: Northstar's marker, drawn and lit
+/// The star in a scene heading's gutter: Blackline's marker, drawn and lit
 /// the way Tesseract draws its rhombus — a gradient shape with a bloom the
 /// shape of itself and a bright core, lifting when you are in its scene.
 fn scene_star(ui: &egui::Ui, c: Pos2, bid: u64, live: bool, dimmed: bool) {

@@ -1,7 +1,7 @@
 //! Keyboard shortcuts, and the ones you choose instead.
 //!
 //! Every command the app's shortcuts reach has its default chords here — the
-//! ones Northstar has always had — and a person can give any of them a chord
+//! ones Blackline has always had — and a person can give any of them a chord
 //! of their own. Only what differs from the defaults is kept, in their
 //! settings: on the web those are their account's, so the keys follow them to
 //! any browser. Writing keys (Enter, Tab, Backspace, Alt+arrows in the

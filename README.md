@@ -1,24 +1,26 @@
-# Northstar
+# Blackline
 
-**A screenwriting studio for Linux.** By MarkedExiled Software.
+**A screenwriting studio for Linux.** By NativeCompute.
 
 It behaves like a notes app — open it, type, it saves itself — but every
 paragraph is a typed screenplay element, laid out to standard master-scene
 geometry and exportable as a print-ready PDF, a Final Draft file or Fountain.
 
-Scripts are stored as plain markdown in `~/.local/share/northstar/scripts`, so
-your work stays greppable, diffable, and yours.
+Scripts are stored as plain markdown in `~/.local/share/blackline/scripts`, so
+your work stays greppable, diffable, and yours. A library made when the app
+was called Northstar (`~/.local/share/northstar`) is used where it is: nothing
+is moved, copied or rewritten.
 
-Northstar is drawn in the same design language as
+Blackline is drawn in the same design language as
 [Tesseract](https://github.com/exiledddev/tesseract) — the same islands on
 glass, the same palettes, glow, motion, type and controls — so the two sit on
 a desktop as one family. It does not share Tesseract's features, only its
 look; and with **Match Tesseract** on (the default) it wears whatever theme
 Tesseract is wearing, live.
 
-![Tesseract above, Northstar below, in the same theme](docs/northstar-with-tesseract.png)
+![Tesseract above, Blackline below, in the same theme](docs/northstar-with-tesseract.png)
 
-![Northstar in the JetBrains theme, with character colours and every panel open](docs/northstar-jetbrains.png)
+![Blackline in the JetBrains theme, with character colours and every panel open](docs/northstar-jetbrains.png)
 
 ![Reading mode: one page at a time](docs/northstar-reading.png)
 
@@ -34,7 +36,7 @@ Plasma** or GNOME.
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-# 2. Northstar
+# 2. Blackline
 git clone https://github.com/exiledddev/northstar.git
 cd northstar
 ./install.sh
@@ -49,23 +51,23 @@ libxrandr-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev
 ```
 
 then builds with `cargo build --release`, installs the binary to
-`~/.local/bin/northstar`, and registers a launcher entry and icon so it shows
+`~/.local/bin/blackline`, and registers a launcher entry and icon so it shows
 up in the KDE application menu (the menu cache is rebuilt for you). The icon is
-drawn by the app itself (`northstar --emit-icon`), so it always matches the
+drawn by the app itself (`blackline --emit-icon`), so it always matches the
 mark inside the app.
 
 If `~/.local/bin` is not on your `PATH`, the script says so and tells you the
 line to add.
 
-**Upgrading** from the first Northstar: `git pull` (or re-clone) and run
-`./install.sh` again. It replaces `~/.local/bin/northstar` in place. Your
+**Upgrading** from the first Blackline: `git pull` (or re-clone) and run
+`./install.sh` again. It replaces `~/.local/bin/blackline` in place. Your
 scripts are untouched and open exactly as before — the file format only grew.
 Before every install it also copies your whole library (scripts, snapshots,
-settings) to `~/.local/share/northstar-backup-<date>`. It only copies: nothing
+settings) to `~/.local/share/blackline-backup-<date>`. It only copies: nothing
 in your library is moved or changed. Delete old copies whenever you like.
 
 **Uninstalling:** `./install.sh --uninstall`. Your scripts stay in
-`~/.local/share/northstar`.
+`~/.local/share/blackline`.
 
 Fonts need nothing extra: Outfit (the interface) and Courier Prime (the page)
 ship inside the binary.
@@ -74,7 +76,7 @@ ship inside the binary.
 
 ## The window
 
-Northstar has no desktop title bar. It draws its own: the mark, the name and
+Blackline has no desktop title bar. It draws its own: the mark, the name and
 the three window buttons along the top, the whole strip draggable, a
 double-click to maximise, and invisible grips down every edge for resizing.
 
@@ -215,7 +217,7 @@ unit a shooting schedule is drawn up in.
 ## Files
 
 ```
-~/.local/share/northstar/
+~/.local/share/blackline/
     scripts/       one .md per screenplay
     exports/       pdf / fdx / fountain / txt output
     snapshots/     dated copies, one folder per script
@@ -256,7 +258,7 @@ Rain hammers the corrugated roof.
 A scene's index card — its synopsis and colour — rides directly under its
 heading as an HTML comment, which markdown viewers hide. A starred script has
 `starred: yes` in its front matter. Both are only written when used, so a
-script without them is byte-for-byte what the first Northstar wrote.
+script without them is byte-for-byte what the first Blackline wrote.
 
 Drop a hand-written file into `scripts/` following those rules and it shows up
 in the library on its own. Anything unrecognised becomes action rather than
@@ -284,8 +286,8 @@ The choices are remembered, and Quick Export (`Ctrl+E`) uses them for the
 whole script.
 
 **Import** — the arrow beside *New script*, the `⋯` menu, dropping a file onto
-the window, or `northstar some-file.fountain` — reads Fountain, Final Draft
-and Northstar markdown into a new script. The file picker is KDE's own dialog
+the window, or `blackline some-file.fountain` — reads Fountain, Final Draft
+and Blackline markdown into a new script. The file picker is KDE's own dialog
 (`kdialog`) where there is one, GNOME's (`zenity`) otherwise.
 
 **Snapshots** (`⋯` → *Take a snapshot* / *Snapshots…*) put a dated copy of the
@@ -313,8 +315,8 @@ with the PDF, and how long the app waits before saving.
 
 With **Match Tesseract** on, theme, light/dark, glass, blur and motion are read
 from `~/.local/share/tesseract/settings.conf` and followed as Tesseract changes
-them. Choosing a look by hand in Northstar turns matching off. Without
-Tesseract installed, Northstar starts in Bloodmoon, its own red.
+them. Choosing a look by hand in Blackline turns matching off. Without
+Tesseract installed, Blackline starts in Bloodmoon, its own red.
 
 ---
 
@@ -349,7 +351,7 @@ and goes.
 
 ---
 
-## For a team: Northstar Web
+## For a team: Blackline Web
 
 The same app runs in a browser for a whole team, on one shared library, with
 Discord sign-in, a script picker, who-edited-what history and one editor per
@@ -393,7 +395,7 @@ cargo test          # 101 tests: behaviour, files, formats, headless UI, team sc
 cargo build --lib --target wasm32-unknown-unknown   # the library builds for the browser too
 cargo run --example team_demo                       # the team screens, no server needed
 cargo build --release
-./target/release/northstar --emit-icon icon.svg   # the mark, as the app draws it
+./target/release/blackline --emit-icon icon.svg   # the mark, as the app draws it
 ```
 
 The headless UI tests build a real `App`, feed it synthetic clicks, drags,

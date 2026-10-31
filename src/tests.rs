@@ -118,7 +118,7 @@ pub(crate) static VAULT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub(crate) fn sandbox(name: &str) -> std::sync::MutexGuard<'static, ()> {
     let guard = VAULT.lock().unwrap_or_else(|e| e.into_inner());
-    let dir = std::env::temp_dir().join(format!("northstar-{name}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("blackline-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(&dir);
     std::env::set_var("XDG_DATA_HOME", &dir);
@@ -168,7 +168,7 @@ fn a_scene_card_round_trips_through_the_file() {
 }
 
 #[test]
-fn files_from_the_first_northstar_still_open_unchanged() {
+fn files_from_the_first_blackline_still_open_unchanged() {
     let old = "---\ntitle: Old\nauthor: Me\ncontact: \ndraft: One\n---\n\n## INT. ROOM - DAY\n\nA room.\n\n**BOB**\n\n> Hi.\n\n`CUT TO:`\n\n";
     let d = storage::from_markdown(old);
     assert_eq!(d.blocks.len(), 5);
@@ -182,7 +182,7 @@ fn files_from_the_first_northstar_still_open_unchanged() {
 }
 
 /// Scripts as they sit on a writer's disk today: two written by the first
-/// Northstar, one by this one with a card and a star. Every byte matters —
+/// Blackline, one by this one with a card and a star. Every byte matters —
 /// these are somebody's work.
 const A_REAL_LIBRARY: [(&str, &str); 3] = [
     (
@@ -405,7 +405,7 @@ fn the_pdf_can_carry_scene_numbers() {
 #[test]
 fn settings_round_trip_and_share_tesseract_s_keys() {
     let mut s = Settings::default();
-    assert_eq!(s.theme, ThemeId::Bloodmoon, "Northstar's own red, when not following Tesseract");
+    assert_eq!(s.theme, ThemeId::Bloodmoon, "Blackline's own red, when not following Tesseract");
     s.theme = ThemeId::Void;
     s.light_mode = true;
     s.blur = BlurMode::Off;
@@ -437,7 +437,7 @@ fn settings_round_trip_and_share_tesseract_s_keys() {
     assert!(mine.light_mode && !mine.animations);
     assert_eq!(mine.blur, BlurMode::Always);
     assert!((mine.glass_opacity - 0.8).abs() < 1e-4);
-    assert_eq!(mine.autosave_ms, 1200, "how often to save is Northstar's own business");
+    assert_eq!(mine.autosave_ms, 1200, "how often to save is Blackline's own business");
     assert!(!mine.adopt_look(&t), "adopting twice changes nothing");
     // garbage never panics and never goes out of range
     let g = Settings::parse("page_px = 900\nglass_opacity = -3\nsession_goal = x\n=\n");
@@ -544,7 +544,23 @@ fn every_palette_is_complete_in_both_casts() {
 fn the_icon_is_an_svg_drawn_from_the_mark() {
     let s = crate::logo::svg();
     assert!(s.starts_with("<svg"));
-    assert_eq!(s.matches("<polygon").count(), 16, "eight rays, two facets each");
+    assert_eq!(s.matches("<polygon").count(), 2, "the slab and the line");
+    assert!(s.contains("#3B4CFF"), "the line is the signal blue");
+}
+
+#[test]
+fn a_library_from_before_the_rename_stays_where_it_is() {
+    let home = std::env::temp_dir().join(format!("blackline-rename-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let fresh = if cfg!(windows) { "Blackline" } else { "blackline" };
+    // nothing yet: a new library under the new name
+    assert_eq!(storage::library_in(&home), home.join(fresh));
+    // a Northstar library is used where it is, and nothing is made beside it
+    std::fs::create_dir_all(home.join("northstar/scripts")).unwrap();
+    assert_eq!(storage::library_in(&home), home.join("northstar"));
+    assert!(!home.join(fresh).exists());
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 #[test]

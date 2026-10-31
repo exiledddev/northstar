@@ -3,7 +3,7 @@
 //! Library root (created on first run):
 //!
 //! ```text
-//! ~/.local/share/northstar/
+//! ~/.local/share/blackline/   (or ~/.local/share/northstar/, kept where it was)
 //!     scripts/       <- one .md per screenplay
 //!     exports/       <- pdf / fdx / fountain / txt output
 //!     snapshots/     <- dated copies of a script, one folder per script
@@ -37,7 +37,7 @@
 //!
 //! Blocks are separated by a blank line and never contain a newline, which is
 //! what makes parsing a single pass with no ambiguity. Files written by the
-//! first Northstar open unchanged; files written by this one open in it.
+//! first Blackline open unchanged; files written by this one open in it.
 
 #[cfg(not(target_arch = "wasm32"))]
 use std::fs;
@@ -64,7 +64,22 @@ fn data_home() -> PathBuf {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn library_root() -> PathBuf {
-    data_home().join("northstar")
+    library_in(&data_home())
+}
+
+/// The library under `home`. A library made when the app was called
+/// Northstar stays exactly where it is and keeps being used: nothing is
+/// moved or copied.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn library_in(home: &Path) -> PathBuf {
+    let name = if cfg!(windows) { "Blackline" } else { "blackline" };
+    let fresh = home.join(name);
+    let legacy = home.join("northstar");
+    if !fresh.exists() && legacy.is_dir() {
+        legacy
+    } else {
+        fresh
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -167,7 +182,7 @@ pub fn list_scripts() -> Vec<Entry> {
             author: meta.author.clone(),
         });
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|a| std::cmp::Reverse(a.modified));
     out
 }
 
@@ -641,7 +656,7 @@ pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
 }
 
 /// Read a screenplay from another format into a document. Fountain, Final
-/// Draft and Northstar's own markdown are understood; anything else is read
+/// Draft and Blackline's own markdown are understood; anything else is read
 /// as Fountain, which degrades to plain action.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn import_file(path: &Path) -> Result<Document, String> {

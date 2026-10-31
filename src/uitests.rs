@@ -24,13 +24,13 @@ struct Harness {
 fn sandbox(settings: &str) -> std::sync::MutexGuard<'static, ()> {
     let guard = VAULT.lock().unwrap_or_else(|e| e.into_inner());
     let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!("northstar-ui-{}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("blackline-ui-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::create_dir_all(dir.join("northstar"));
+    let _ = std::fs::create_dir_all(dir.join("blackline"));
     std::env::set_var("XDG_DATA_HOME", &dir);
     // No splash and no easing, so a frame is a frame.
     let _ = std::fs::write(
-        dir.join("northstar/settings.conf"),
+        dir.join("blackline/settings.conf"),
         format!("splash = no\nanimations = no\nmatch_tesseract = no\nautosave_ms = 150\n{settings}"),
     );
     guard
@@ -568,7 +568,7 @@ fn the_settings_panel_opens_from_the_ribbon() {
 }
 
 #[test]
-fn northstar_follows_tesseract_s_theme_live() {
+fn blackline_follows_tesseract_s_theme_live() {
     let mut h = Harness::with(1320.0, 900.0, "match_tesseract = yes\n");
     let tess = storage::tesseract_settings_path();
     std::fs::create_dir_all(tess.parent().unwrap()).unwrap();
@@ -578,7 +578,7 @@ fn northstar_follows_tesseract_s_theme_live() {
     h.frames(2);
     assert_eq!(theme::pal().id, ThemeId::Void);
     assert!(!theme::pal().dark);
-    // Tesseract changes its mind; Northstar follows
+    // Tesseract changes its mind; Blackline follows
     std::thread::sleep(Duration::from_millis(1100));
     std::fs::write(&tess, "theme = ember\nlight_mode = no\n").unwrap();
     std::thread::sleep(Duration::from_millis(1600));

@@ -148,7 +148,7 @@ impl App {
             })
             .cloned()
             .collect();
-        list.sort_by(|a, b| b.modified.cmp(&a.modified));
+        list.sort_by_key(|a| std::cmp::Reverse(a.modified));
 
         if self.entries.is_empty() {
             self.home_empty(ui);
@@ -456,7 +456,7 @@ impl App {
                 ui.add_space(4.0);
                 ui.label(
                     egui::RichText::new(if self.can_write() {
-                        "Start one, or bring one in: Fountain, Final Draft and Northstar's own files all import."
+                        "Start one, or bring one in: Fountain, Final Draft and Blackline's own files all import."
                     } else {
                         "When someone on the team starts a script, it shows up here."
                     })
@@ -495,7 +495,7 @@ impl App {
             }
             ui.add_space(10.0);
             let (r, _) = ui.allocate_exact_size(Vec2::new(260.0, 14.0), Sense::hover());
-            let text = "MARKEDEXILED SOFTWARE";
+            let text = "NATIVECOMPUTE";
             // tracked text is drawn from its left edge: centre it by its width
             let galley = ui
                 .painter()

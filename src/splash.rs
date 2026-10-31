@@ -101,7 +101,7 @@ impl Splash {
                 theme::tracked_text(
                     painter,
                     Pos2::new(rect.left() + 112.0 + drift, rect.top() + 64.0),
-                    "NORTHSTAR",
+                    "BLACKLINE",
                     theme::font_bold(30.0),
                     ink(p.text, 1.0),
                     2.2,
@@ -133,7 +133,7 @@ impl Splash {
                 theme::tracked_text(
                     painter,
                     Pos2::new(rect.left() + 40.0, rect.bottom() - 36.0),
-                    "MARKEDEXILED SOFTWARE",
+                    "NATIVECOMPUTE",
                     theme::font_semi(theme::T_MICRO),
                     ink(p.text_faint, 1.0),
                     1.6,

@@ -12,7 +12,7 @@
 //! deleting a script should not be something you do by clicking past a banner.
 
 // The shared kit is kept whole and in step with Tesseract's copy: a
-// primitive with no caller in Northstar today is still part of the language.
+// primitive with no caller in Blackline today is still part of the language.
 #![allow(dead_code)]
 
 use web_time::{Duration, Instant};

@@ -1,4 +1,4 @@
-//! Northstar — a screenwriting studio.
+//! Blackline — a screenwriting studio.
 //!
 //! Scripts are plain markdown; the editor formats them to standard
 //! master-scene screenplay geometry and exports print-ready PDF. Drawn in the
@@ -9,7 +9,7 @@
 //! same code in a browser tab over the team library, through a different
 //! [`backend::Store`]. One app, one design, two homes.
 //!
-//! MarkedExiled Software.
+//! NativeCompute.
 
 #[cfg(test)]
 mod tests;

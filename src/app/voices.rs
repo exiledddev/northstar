@@ -144,7 +144,7 @@ impl App {
                 ui.painter().circle_filled(dot, 5.0, c);
                 if chosen {
                     // a ring: this colour was chosen, not dealt
-                    ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2, theme::wash(c, 200)));
+                    ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2_f32, theme::wash(c, 200)));
                 }
                 ui.painter().galley(Pos2::new(rect.left() + 25.0, rect.center().y - g.rect.height() * 0.5), g, c);
                 let resp = resp.on_hover_text(if chosen { "Chosen · click to change" } else { "Dealt · click to choose" });
@@ -273,7 +273,7 @@ fn hue_track(ui: &mut egui::Ui, chosen: Option<u16>) -> Option<u16> {
         let knob = Pos2::new(x, track.center().y);
         ui.painter().circle_filled(knob, 7.0, p.solid);
         ui.painter().circle_filled(knob, 5.0, theme::voice_of_hue(h));
-        ui.painter().circle_stroke(knob, 7.0, Stroke::new(1.0, theme::wash(p.text, 120)));
+        ui.painter().circle_stroke(knob, 7.0, Stroke::new(1.0_f32, theme::wash(p.text, 120)));
     }
     if resp.hovered() || resp.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);

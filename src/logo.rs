@@ -1,109 +1,70 @@
 //! The mark.
 //!
-//! A north star: a four-pointed compass star with four shorter rays set
-//! between its points, cut into facets with the light showing between them.
-//! It is built the way Tesseract's mark is built — every facet pulled in toward
-//! its own middle so the gaps draw the edges, filled from the theme's
-//! secondary gradient, lit from the upper left — so the two marks sit on a
-//! desktop as siblings.
+//! Blackline's mark is drawn in NativeCompute's language: the company mark is
+//! four slanted slabs of liquid chrome, and Blackline's is one of them, with
+//! the black line beside it set in the signal blue. A wide capsule leaning
+//! right, a thin one parallel to it.
 //!
-//! Everything is painted from primitives so the mark takes the current theme,
-//! scales to any size and never depends on an image file being found.
+//! Everything is painted from primitives so the mark scales to any size and
+//! never depends on an image file being found.
 
 use eframe::egui::{self, Color32, Pos2, Rect, Stroke, Vec2};
 
 use crate::theme::{self, pal};
 
-/// One facet of the star: its corners, and how much light it catches (0..1).
-struct Facet {
-    pts: Vec<Pos2>,
-    shade: f32,
-}
+/// The signal blue, the one colour the mark always carries.
+pub const SIGNAL: Color32 = Color32::from_rgb(0x3B, 0x4C, 0xFF);
 
-/// The star's facets, back to front. `r` is the reach of the long points.
-fn facets(centre: Pos2, r: f32) -> Vec<Facet> {
-    let light = Vec2::new(-0.42, -1.0).normalized();
-    let at = |angle: f32, dist: f32| -> Pos2 {
-        Pos2::new(centre.x + angle.cos() * dist, centre.y + angle.sin() * dist)
-    };
-    let quarter = std::f32::consts::FRAC_PI_2;
-    let eighth = std::f32::consts::FRAC_PI_4;
-    let mut out = Vec::new();
+/// The two strokes of the mark in a unit square: (from, to, width), from the
+/// bottom end to the top end.
+type Stroke2 = ((f32, f32), (f32, f32), f32);
+const STROKES: [Stroke2; 2] = [
+    ((0.27, 0.83), (0.49, 0.17), 0.21),
+    ((0.585, 0.83), (0.805, 0.17), 0.075),
+];
 
-    // the four short rays on the diagonals, behind the long ones
-    for k in 0..4 {
-        let a = -quarter + eighth + quarter * k as f32;
-        let tip = at(a, r * 0.64);
-        let l = at(a - 0.42, r * 0.30);
-        let rr = at(a + 0.42, r * 0.30);
-        for (pts, bias) in [(vec![tip, rr, centre], 0.10_f32), (vec![tip, centre, l], -0.10)] {
-            let mid = (pts[0].to_vec2() + pts[1].to_vec2() + pts[2].to_vec2()) / 3.0;
-            let v = (mid - centre.to_vec2()).normalized();
-            // the short rays sit a step back, so they read as further away
-            let shade = ((0.5 + 0.5 * v.dot(light)) * 0.55 + bias).clamp(0.0, 1.0);
-            out.push(Facet { pts, shade });
+/// A slanted capsule from `a` to `b`, `w` wide, with round ends.
+fn capsule(a: Pos2, b: Pos2, w: f32) -> Vec<Pos2> {
+    let along = (b - a).normalized();
+    let side = Vec2::new(-along.y, along.x);
+    let r = w * 0.5;
+    let steps = 10;
+    let mut pts = Vec::with_capacity(2 * steps + 2);
+    let base = side.y.atan2(side.x);
+    // around the far end, then the near one
+    for (c, from) in [(b, base + std::f32::consts::PI), (a, base)] {
+        for k in 0..=steps {
+            let t = from + std::f32::consts::PI * k as f32 / steps as f32;
+            pts.push(Pos2::new(c.x + t.cos() * r, c.y + t.sin() * r));
         }
     }
-
-    // the four long points, each split down its spine into a lit half and a
-    // half turned away from the light
-    for k in 0..4 {
-        let a = -quarter + quarter * k as f32;
-        let tip = at(a, r);
-        let l = at(a - eighth, r * 0.36);
-        let rr = at(a + eighth, r * 0.36);
-        for (pts, bias) in [(vec![tip, rr, centre], 0.12_f32), (vec![tip, centre, l], -0.12)] {
-            let mid = (pts[0].to_vec2() + pts[1].to_vec2() + pts[2].to_vec2()) / 3.0;
-            let v = (mid - centre.to_vec2()).normalized();
-            let shade = (0.5 + 0.5 * v.dot(light) + bias).clamp(0.0, 1.0);
-            out.push(Facet { pts, shade });
-        }
-    }
-    out
+    pts
 }
 
-fn shrink_toward_middle(pts: &[Pos2], gap: f32) -> Vec<Pos2> {
-    let mut mid = Vec2::ZERO;
-    for q in pts {
-        mid += q.to_vec2();
-    }
-    let mid = (mid / pts.len() as f32).to_pos2();
-    pts.iter()
-        .map(|q| {
-            let away = *q - mid;
-            let len = away.length().max(0.001);
-            *q - away / len * gap
-        })
-        .collect()
+/// The mark's two shapes, laid into `rect`: the slab, then the line.
+fn shapes(rect: Rect) -> [Vec<Pos2>; 2] {
+    let side = rect.width().min(rect.height());
+    let origin = rect.center() - Vec2::splat(side * 0.5);
+    let at = |(x, y): (f32, f32)| origin + Vec2::new(x * side, y * side);
+    STROKES.map(|(a, b, w)| capsule(at(a), at(b), w * side))
 }
 
-/// Paint the mark into `rect`. `glow` in 0..=1 adds the bloom.
-pub fn paint(painter: &egui::Painter, rect: Rect, glow: f32) {
+/// Paint the mark into `rect`. The slab is chrome on a dark ground and ink on
+/// a light one; `_glow` is kept for callers and adds nothing: the language
+/// has no glows.
+pub fn paint(painter: &egui::Painter, rect: Rect, _glow: f32) {
     let p = pal();
-    let centre = rect.center();
-    let r = rect.width().min(rect.height()) * 0.49;
-    if r < 2.0 {
+    if rect.width().min(rect.height()) < 4.0 {
         return;
     }
-    let gap = (r * 0.05).max(0.45);
-
-    if glow > 0.01 {
-        theme::glow_star(painter, centre, r * 0.5, p.sec_grad.1, r * 2.2, glow);
-    }
-
-    let (a, b) = p.sec_grad;
-    let lit = theme::lighten(b, 0.35);
-    let deep = theme::darken(a, 0.3);
-    for f in facets(centre, r) {
-        let fill = theme::mix(deep, lit, f.shade);
-        theme::fill_grad_poly(
-            painter,
-            &shrink_toward_middle(&f.pts, gap),
-            theme::lighten(fill, 0.10),
-            theme::darken(fill, 0.10),
-            Vec2::new(0.3, 1.0),
-        );
-    }
+    let [slab, line] = shapes(rect);
+    let (lit, deep) = if p.dark {
+        (Color32::from_rgb(0xF2, 0xF3, 0xF7), Color32::from_rgb(0x8A, 0x8F, 0xA8))
+    } else {
+        (Color32::from_rgb(0x2A, 0x2D, 0x3A), Color32::from_rgb(0x05, 0x06, 0x0A))
+    };
+    theme::fill_grad_poly(painter, &slab, lit, deep, Vec2::new(0.35, 1.0));
+    painter.add(egui::Shape::convex_polygon(line, SIGNAL, Stroke::NONE));
 }
 
 /// The circular line spinner: one arc chasing its tail, drawn with a taper so
@@ -137,49 +98,25 @@ pub fn spinner(painter: &egui::Painter, centre: Pos2, radius: f32, t: f32, color
     );
 }
 
-/// The mark as an SVG, for the desktop icon. Written at install time so the
-/// launcher icon matches whatever the app draws.
+/// The mark as an SVG, for the launcher icon: white on a black tile, the way
+/// NativeCompute's own icon is white on a blue one. Written at install time
+/// so the launcher icon is the mark the app draws.
 pub fn svg() -> String {
-    // Bloodmoon dark — Northstar's own red, the way Tesseract's icon is Zen —
-    // since a launcher icon cannot follow the in-app theme.
-    let p = theme::palette(theme::ThemeId::Bloodmoon, true);
-    let hex = |c: Color32| format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b());
     let poly = |pts: &[Pos2]| -> String {
         pts.iter()
             .map(|q| format!("{:.2},{:.2}", q.x, q.y))
             .collect::<Vec<_>>()
             .join(" ")
     };
-    let centre = Pos2::new(64.0, 64.0);
-    let r = 44.0;
-
+    let [slab, line] = shapes(Rect::from_min_size(Pos2::new(56.0, 56.0), Vec2::splat(400.0)));
     let mut s = String::new();
     s.push_str(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 128 128\" \
-         width=\"128\" height=\"128\">\n",
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 512 512\" \
+         width=\"512\" height=\"512\">\n  <title>Blackline</title>\n",
     );
-    s.push_str(&format!(
-        "  <rect width=\"128\" height=\"128\" rx=\"30\" fill=\"{}\"/>\n",
-        hex(p.sunken)
-    ));
-    s.push_str(&format!(
-        "  <rect x=\"1\" y=\"1\" width=\"126\" height=\"126\" rx=\"29.5\" \
-         fill=\"none\" stroke=\"{}\" stroke-width=\"2\"/>\n",
-        hex(p.line)
-    ));
-    // Flat tones rather than gradients: an icon is rendered at 24 pixels as
-    // often as 128, by whichever SVG renderer the desktop carries, and flat
-    // tones survive all of them.
-    let (a, b) = p.sec_grad;
-    let lit = theme::lighten(b, 0.30);
-    let deep = theme::darken(a, 0.25);
-    for f in facets(centre, r) {
-        s.push_str(&format!(
-            "  <polygon points=\"{}\" fill=\"{}\"/>\n",
-            poly(&shrink_toward_middle(&f.pts, 1.6)),
-            hex(theme::mix(deep, lit, f.shade))
-        ));
-    }
+    s.push_str("  <rect width=\"512\" height=\"512\" rx=\"116\" fill=\"#000000\"/>\n");
+    s.push_str(&format!("  <polygon points=\"{}\" fill=\"#F2F3F7\"/>\n", poly(&slab)));
+    s.push_str(&format!("  <polygon points=\"{}\" fill=\"#3B4CFF\"/>\n", poly(&line)));
     s.push_str("</svg>\n");
     s
 }

@@ -2,7 +2,7 @@
 //!
 //! The app never touches a file or a server itself. It talks to a [`Store`]:
 //! on the desktop that is [`LocalBackend`], the user's own library folder,
-//! exactly as Northstar has always kept it; in the browser it is the team
+//! exactly as Blackline has always kept it; in the browser it is the team
 //! library on the server, behind the same trait (in the web crate).
 //!
 //! Every call answers at once. A store that has to go and ask somebody — the
@@ -340,8 +340,8 @@ mod local {
     use crate::settings::{AfterExport, Settings};
     use crate::storage::{self, Entry, Snapshot};
 
-    /// The library folder under `~/.local/share/northstar`, kept exactly as
-    /// Northstar always has: these are the same `storage` calls the app made
+    /// The library folder under `~/.local/share/blackline`, kept exactly as
+    /// Blackline always has: these are the same `storage` calls the app made
     /// itself before there was a trait.
     #[derive(Default)]
     pub struct LocalBackend {

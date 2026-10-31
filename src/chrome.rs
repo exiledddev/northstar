@@ -1,6 +1,6 @@
 //! The window itself.
 //!
-//! Northstar asks for no decorations, so it draws its own: a slim title bar
+//! Blackline asks for no decorations, so it draws its own: a slim title bar
 //! with the mark, the name and the three window buttons, and invisible grips
 //! along the edges for resizing. The whole window is one sheet of glass with
 //! rounded corners; the islands are opaque and float on it, with nothing but
@@ -77,7 +77,7 @@ pub fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, extra: impl FnOnce(&mut
     theme::tracked_text(
         &painter,
         Pos2::new(name.left(), name.center().y),
-        "NORTHSTAR",
+        "BLACKLINE",
         theme::font_semi(10.5),
         p.text_dim,
         1.7,

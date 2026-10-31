@@ -10,7 +10,7 @@
 //! and everything that lights up lights up *from the glyph outward*.
 
 // The shared kit is kept whole and in step with Tesseract's copy: a
-// primitive with no caller in Northstar today is still part of the language.
+// primitive with no caller in Blackline today is still part of the language.
 #![allow(dead_code)]
 
 use eframe::egui::{self, Align, Color32, Layout, Pos2, Rect, Response, Sense, Stroke, Vec2};

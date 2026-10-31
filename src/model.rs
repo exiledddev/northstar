@@ -812,7 +812,7 @@ pub fn complete(doc: &Document, own: u64, element: Element, typed: &str) -> Opti
             // until INT. or EXT. is written out, that is all that is offered
             if !SLUG_PREFIXES.iter().any(|p| typed_up.starts_with(p)) {
                 cands.retain(|(c, _)| c.len() > typed_up.len() && c.starts_with(&typed_up));
-                cands.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+                cands.sort_by_key(|a| a.0.len());
                 let best = cands.into_iter().next()?.0;
                 return Some(best[typed_up.len()..].to_string());
             }

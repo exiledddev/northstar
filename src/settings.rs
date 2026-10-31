@@ -2,9 +2,9 @@
 //!
 //! Written to `settings.conf` next to the scripts as plain `key = value`
 //! lines, so it can be read and fixed with a text editor if it ever gets into
-//! a state the app will not open. Every key Northstar shares with Tesseract is
+//! a state the app will not open. Every key Blackline shares with Tesseract is
 //! spelled exactly as Tesseract spells it, so one parser reads both files —
-//! that is what lets Northstar follow Tesseract's theme.
+//! that is what lets Blackline follow Tesseract's theme.
 
 use crate::theme::ThemeId;
 
@@ -80,7 +80,7 @@ impl SortBy {
 /// What Quick Export (Ctrl+E) does with the PDF once it is written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum AfterExport {
-    /// Open it in the default PDF viewer — what Northstar always did.
+    /// Open it in the default PDF viewer — what Blackline always did.
     #[default]
     Open,
     /// Show it in the file manager — what Tesseract does.
@@ -131,7 +131,7 @@ pub struct Settings {
     /// Idle time before a touched script is written out, in milliseconds.
     pub autosave_ms: u64,
 
-    // ---- Northstar's own ----
+    // ---- Blackline's own ----
     /// Take theme, light/dark, glass, blur and motion from Tesseract whenever
     /// Tesseract's settings are there to read.
     pub match_tesseract: bool,
@@ -221,7 +221,7 @@ impl Settings {
     pub fn serialize(&self) -> String {
         let b = |v: bool| if v { "yes" } else { "no" };
         format!(
-            "# Northstar settings.\n\
+            "# Blackline settings.\n\
              theme = {}\n\
              light_mode = {}\n\
              animations = {}\n\

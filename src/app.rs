@@ -247,7 +247,7 @@ pub struct App {
     page_key: String,
     page_born: Instant,
     splash: Option<Splash>,
-    /// Files named on the command line — "Open with Northstar" — handled on
+    /// Files named on the command line — "Open with Blackline" — handled on
     /// the first frame.
     pub arrivals: Vec<PathBuf>,
 }
@@ -261,7 +261,7 @@ impl App {
         app.blur = blur::Blur::install(cc);
         // Worth one line on stderr: when the islands look wrong, this is why.
         eprintln!(
-            "northstar: {} — window blur {}",
+            "blackline: {} — window blur {}",
             blur::session_name(),
             app.blur.state.describe()
         );
@@ -908,13 +908,12 @@ impl App {
         self.checkpoint();
         let before = self.doc.blocks[..at].iter().filter(|b| b.element == Element::Act).count();
         // the acts after it that still have their given names move up one
-        let mut n = before + 1;
         let after = if replace { at + 1 } else { at };
-        for b in self.doc.blocks[after..].iter_mut().filter(|b| b.element == Element::Act) {
+        let later = self.doc.blocks[after..].iter_mut().filter(|b| b.element == Element::Act);
+        for (n, b) in (before + 1..).zip(later) {
             if b.text.trim() == act_title(n) {
                 b.text = act_title(n + 1);
             }
-            n += 1;
         }
         let title = act_title(before + 1);
         let id = if replace {
@@ -1528,7 +1527,7 @@ impl App {
                         theme::tracked_text(
                             ui.painter(),
                             Pos2::new(foot.left() + 3.0, foot.center().y + 2.0),
-                            "MARKEDEXILED SOFTWARE",
+                            "NATIVECOMPUTE",
                             theme::font_semi(theme::T_MICRO - 0.5),
                             theme::wash(p.text_faint, 150),
                             1.4,
@@ -1571,9 +1570,9 @@ impl App {
             .cloned()
             .collect();
         match self.settings.sort_by {
-            SortBy::Recent => list.sort_by(|a, b| b.modified.cmp(&a.modified)),
-            SortBy::Title => list.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
-            SortBy::Length => list.sort_by(|a, b| b.pages.cmp(&a.pages)),
+            SortBy::Recent => list.sort_by_key(|a| std::cmp::Reverse(a.modified)),
+            SortBy::Title => list.sort_by_key(|a| a.title.to_lowercase()),
+            SortBy::Length => list.sort_by_key(|a| std::cmp::Reverse(a.pages)),
         }
 
         let mut selected_row: Option<Rect> = None;
@@ -2420,7 +2419,7 @@ impl App {
                         let on = anim::ease(ui.ctx(), sr.id, sr.hovered(), anim::HOVER);
                         ui.painter().circle_filled(dot, 4.2 + 1.2 * on, colour);
                         if on > 0.02 {
-                            ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2, theme::wash(colour, (200.0 * on) as u8)));
+                            ui.painter().circle_stroke(dot, 7.5, Stroke::new(1.2_f32, theme::wash(colour, (200.0 * on) as u8)));
                         }
                         if sr.on_hover_text("Choose their colour").clicked() {
                             pick = Some((c.name.clone(), hit.left_bottom()));
@@ -3583,7 +3582,7 @@ impl App {
                 ui.painter().text(
                     foot,
                     egui::Align2::LEFT_BOTTOM,
-                    format!("Northstar {}", env!("CARGO_PKG_VERSION")),
+                    format!("Blackline {}", env!("CARGO_PKG_VERSION")),
                     theme::font_mono(theme::T_MICRO),
                     p.text_faint,
                 );
@@ -3962,7 +3961,7 @@ impl App {
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "Page font: {} · Northstar {} · MarkedExiled Software",
+                    "Page font: {} · Blackline {} · NativeCompute",
                     theme::PAGE_FONT_NAME,
                     env!("CARGO_PKG_VERSION")
                 ))
@@ -3991,7 +3990,7 @@ impl App {
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "Page font: {} · Northstar {} · MarkedExiled Software",
+                    "Page font: {} · Blackline {} · NativeCompute",
                     theme::PAGE_FONT_NAME,
                     env!("CARGO_PKG_VERSION")
                 ))

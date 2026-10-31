@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build Northstar and install it for the current user.
+# Build Blackline and install it for the current user.
 # Tested target: Pop!_OS / Debian / Ubuntu with KDE Plasma or GNOME.
 #
 #   ./install.sh              build and install (or upgrade in place)
@@ -23,10 +23,24 @@ refresh_desktop() {
   command -v kbuildsycoca5 >/dev/null 2>&1 && kbuildsycoca5 >/dev/null 2>&1 || true
 }
 
-if [ "${1:-}" = "--uninstall" ]; then
+# The library: one made when the app was called Northstar stays where it is
+# and keeps being used.
+SHARE="${XDG_DATA_HOME:-$HOME/.local/share}"
+DATA_DIR="$SHARE/blackline"
+if [ ! -e "$DATA_DIR" ] && [ -d "$SHARE/northstar" ]; then
+  DATA_DIR="$SHARE/northstar"
+fi
+
+# what the app was installed as before it was called Blackline
+remove_northstar() {
   rm -f "$BIN_DIR/northstar" "$APP_DIR/northstar.desktop" "$ICON_DIR/northstar.svg"
+}
+
+if [ "${1:-}" = "--uninstall" ]; then
+  rm -f "$BIN_DIR/blackline" "$APP_DIR/blackline.desktop" "$ICON_DIR/blackline.svg"
+  remove_northstar
   refresh_desktop
-  say "Northstar removed. Your scripts are still in ~/.local/share/northstar"
+  say "Blackline removed. Your scripts are still in $DATA_DIR"
   exit 0
 fi
 
@@ -77,7 +91,6 @@ cargo build --release
 # settings) is copied aside. Copied only: nothing in it is moved, changed or
 # deleted, and the copy is never touched again. Delete old copies by hand when
 # you no longer want them.
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/northstar"
 if [ -d "$DATA_DIR" ]; then
   BACKUP="${DATA_DIR}-backup-$(date +%Y%m%d-%H%M%S)"
   cp -a "$DATA_DIR" "$BACKUP"
@@ -86,24 +99,25 @@ fi
 
 # ---- install ------------------------------------------------------------
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
-install -m 755 target/release/northstar "$BIN_DIR/northstar"
-install -m 644 packaging/northstar.desktop "$APP_DIR/northstar.desktop"
+remove_northstar
+install -m 755 target/release/blackline "$BIN_DIR/blackline"
+install -m 644 packaging/blackline.desktop "$APP_DIR/blackline.desktop"
 
 # The launcher icon is drawn by the same code as the mark inside the app, so
 # the two can never drift apart.
 say "Drawing the icon"
-"$BIN_DIR/northstar" --emit-icon "$ICON_DIR/northstar.svg" >/dev/null
-install -m 644 "$ICON_DIR/northstar.svg" packaging/northstar.svg
+"$BIN_DIR/blackline" --emit-icon "$ICON_DIR/blackline.svg" >/dev/null
+install -m 644 "$ICON_DIR/blackline.svg" packaging/blackline.svg
 
 refresh_desktop
 
-say "Installed to $BIN_DIR/northstar"
+say "Installed to $BIN_DIR/blackline"
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
   say "Note: $BIN_DIR is not on your PATH. Add this to ~/.bashrc or ~/.zshrc:"
   echo '    export PATH="$HOME/.local/bin:$PATH"'
 fi
-say "Scripts live in ~/.local/share/northstar/scripts"
+say "Scripts live in $DATA_DIR/scripts"
 if [ -f "$HOME/.local/share/tesseract/settings.conf" ]; then
-  say "Tesseract found — Northstar will wear the same theme (Settings → Match Tesseract)."
+  say "Tesseract found — Blackline will wear the same theme (Settings → Match Tesseract)."
 fi
-say "Launch it from the application menu, or run: northstar"
+say "Launch it from the application menu, or run: blackline"
