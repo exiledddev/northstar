@@ -310,7 +310,7 @@ pub fn show(
                         ui.painter().text(
                             Pos2::new(r.left() + 34.0, r.center().y),
                             egui::Align2::LEFT_CENTER,
-                            ui::elide(&sc.heading, 26),
+                            ui::elide_to_width(ui.ctx(), &sc.heading, theme::font_med(theme::T_SM), 0.0, r.width() - 48.0),
                             theme::font_med(theme::T_SM),
                             p.text,
                         );
@@ -395,9 +395,16 @@ fn act_ribbon(ui: &mut egui::Ui, rect: Rect, a: &ActSpan, note: &str) -> bool {
         theme::mix(p.primary_light, p.text, hot),
     );
     let title = if a.title.trim().is_empty() { act_title(a.number) } else { a.title.trim().to_string() };
-    let g = ui
-        .painter()
-        .layout_no_wrap(title.to_uppercase(), theme::font_display(20.0), p.text);
+    // the title never takes more than most of the ribbon; the readout and
+    // the hairline give way first
+    let title = ui::elide_to_width(
+        ui.ctx(),
+        &title.to_uppercase(),
+        theme::font_display(20.0),
+        0.0,
+        (rect.width() - 40.0).max(40.0),
+    );
+    let g = ui.painter().layout_no_wrap(title, theme::font_display(20.0), p.text);
     let w = g.rect.width();
     ui.painter().galley(Pos2::new(rect.left() + 24.0, cy - g.rect.height() * 0.5), g, p.text);
     let mut x = rect.left() + 24.0 + w + 16.0;
@@ -476,10 +483,11 @@ fn draw_card(
         sc.heading.clone()
     };
     let head_x = r.left() + 14.0 + num_w + 10.0;
-    painter.text(
+    let clip = painter.with_clip_rect(r.shrink(1.0));
+    clip.text(
         Pos2::new(head_x, cy),
         egui::Align2::LEFT_CENTER,
-        ui::elide(&heading, ((r.right() - head_x - 14.0) / 7.8) as usize),
+        ui::elide_to_width(ui.ctx(), &heading, theme::font_semi(theme::T_SM), 0.0, r.right() - head_x - 14.0),
         theme::font_semi(theme::T_SM),
         theme::wash(p.text, (255.0 * fade) as u8),
     );
@@ -495,11 +503,12 @@ fn draw_card(
         foot.push_str(" / ");
         foot.push_str(&sc.cast.join(", "));
     }
+    let foot_font = theme::font_hud(theme::T_MICRO);
     theme::tracked_text(
-        painter,
+        &clip,
         Pos2::new(r.left() + 14.0, r.bottom() - 16.0),
-        &ui::elide(&foot, ((r.width() - 28.0) / 7.0) as usize).to_uppercase(),
-        theme::font_hud(theme::T_MICRO),
+        &ui::elide_to_width(ui.ctx(), &foot.to_uppercase(), foot_font.clone(), 0.6, r.width() - 28.0),
+        foot_font,
         theme::wash(p.text_faint, (255.0 * fade) as u8),
         0.6,
     );

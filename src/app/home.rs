@@ -22,6 +22,14 @@ const CARD_W: f32 = 268.0;
 const CARD_H: f32 = 132.0;
 /// The continue card's title, in the display face.
 const T_CONTINUE: f32 = 22.0;
+/// What the continue card keeps clear at its right for "Open →" or "X is
+/// editing".
+const CONTINUE_RIGHT: f32 = 150.0;
+/// The greeting's size, the smallest it steps down to, and the room the
+/// buttons beside it take.
+const HERO_T: f32 = 34.0;
+const HERO_T_MIN: f32 = 22.0;
+const HERO_BUTTONS: f32 = 300.0;
 
 impl App {
     /// Back to the picker, letting go of the script that was open.
@@ -105,10 +113,21 @@ impl App {
                 // the site's hero: a HUD eyebrow, then the words set giant
                 ui::hud(ui, &about.replace(" · ", " / "), None);
                 ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(hello.to_uppercase())
-                        .font(theme::font_display(34.0))
-                        .color(p.text),
+                // set giant, but never into the buttons: a long name steps
+                // the size down, and past the floor it is cut
+                let buttons = HERO_BUTTONS + if team.is_some() { 38.0 } else { 0.0 };
+                let room = (w - buttons).max(120.0);
+                let shout = hello.to_uppercase();
+                let at = |size: f32| theme::tracked_width(ui.ctx(), &shout, theme::font_display(size), 0.0);
+                let full = at(HERO_T);
+                // a hair under the exact ratio: glyph sizes do not scale
+                // perfectly linearly, and a word that only just misses should
+                // shrink, not lose its last letter
+                let size = if full <= room { HERO_T } else { (HERO_T * room / full * 0.97).max(HERO_T_MIN) };
+                let shown = ui::elide_to_width(ui.ctx(), &shout, theme::font_display(size), 0.0, room);
+                ui.add(
+                    egui::Label::new(egui::RichText::new(shown).font(theme::font_display(size)).color(p.text))
+                        .extend(),
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -283,10 +302,14 @@ impl App {
             p.primary_light,
             0.8,
         );
-        ui.painter().text(
+        // the words stop short of what sits on the right: "Open →", or who
+        // is in it now
+        let room = (rect.right() - CONTINUE_RIGHT - x).max(40.0);
+        let clip = ui.painter().with_clip_rect(rect.shrink(1.0));
+        clip.text(
             Pos2::new(x, rect.top() + 48.0),
             egui::Align2::LEFT_CENTER,
-            ui::elide(&e.title.to_uppercase(), ((rect.width() - 220.0) / 15.0) as usize),
+            ui::elide_to_width(ui.ctx(), &e.title.to_uppercase(), theme::font_display(T_CONTINUE), 0.0, room),
             theme::font_display(T_CONTINUE),
             p.text,
         );
@@ -299,11 +322,12 @@ impl App {
         if let Some(by) = &e.edited_by {
             meta.push_str(&format!(" / saved by {}", people::by_line(by, me.as_ref(), &relative_time(e.modified))));
         }
+        let hud = theme::font_hud(theme::T_MICRO + 0.5);
         theme::tracked_text(
-            ui.painter(),
+            &clip,
             Pos2::new(x, rect.top() + 76.0),
-            &meta.replace(" · ", " / ").to_uppercase(),
-            theme::font_hud(theme::T_MICRO + 0.5),
+            &ui::elide_to_width(ui.ctx(), &meta.replace(" · ", " / ").to_uppercase(), hud.clone(), 0.8, room),
+            hud,
             p.text_faint,
             0.8,
         );
@@ -353,12 +377,16 @@ impl App {
 
         let pad = 16.0;
         let x = rect.left() + pad;
-        let chars = ((w - pad * 2.0 - 28.0) / 8.4) as usize;
-        ui.painter().text(
+        // everything is cut to the card, measured; the clip is a backstop
+        let cp = ui.painter().with_clip_rect(rect.shrink(1.0));
+        let inner = w - pad * 2.0;
+        let title_font = theme::font_bold(theme::T_BODY + 0.5);
+        cp.text(
             Pos2::new(x, rect.top() + 24.0),
             egui::Align2::LEFT_CENTER,
-            ui::elide(&e.title, chars),
-            theme::font_bold(theme::T_BODY + 0.5),
+            // room on the right for the star
+            ui::elide_to_width(ui.ctx(), &e.title, title_font.clone(), 0.0, inner - 28.0),
+            title_font,
             p.text,
         );
         let author = if e.author.trim().is_empty() {
@@ -366,10 +394,10 @@ impl App {
         } else {
             format!("by {}", e.author.trim())
         };
-        ui.painter().text(
+        cp.text(
             Pos2::new(x, rect.top() + 46.0),
             egui::Align2::LEFT_CENTER,
-            ui::elide(&author, chars + 4),
+            ui::elide_to_width(ui.ctx(), &author, theme::font(theme::T_CAP), 0.0, inner),
             theme::font(theme::T_CAP),
             p.text_dim,
         );
@@ -400,10 +428,16 @@ impl App {
             }
         } else if let Some(by) = &e.edited_by {
             people::avatar(ui, Rect::from_center_size(Pos2::new(x + 9.0, foot_y), Vec2::splat(18.0)), by);
-            ui.painter().text(
+            cp.text(
                 Pos2::new(x + 26.0, foot_y),
                 egui::Align2::LEFT_CENTER,
-                people::by_line(by, me.as_ref(), &relative_time(e.modified)),
+                ui::elide_to_width(
+                    ui.ctx(),
+                    &people::by_line(by, me.as_ref(), &relative_time(e.modified)),
+                    theme::font(theme::T_CAP),
+                    0.0,
+                    inner - 26.0,
+                ),
                 theme::font(theme::T_CAP),
                 p.text_dim,
             );

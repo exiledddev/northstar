@@ -405,7 +405,7 @@ follows the [code of conduct](CODE_OF_CONDUCT.md).
 ## Development
 
 ```bash
-cargo test          # 101 tests: behaviour, files, formats, headless UI, team screens
+cargo test          # 102 tests: behaviour, files, formats, headless UI, team screens
 cargo build --lib --target wasm32-unknown-unknown   # the library builds for the browser too
 cargo run --example team_demo                       # the team screens, no server needed
 cargo build --release

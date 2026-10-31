@@ -30,6 +30,8 @@ pub const GUTTER: f32 = 74.0;
 const STAR_X: f32 = 26.0;
 /// How tall an act's divider stands.
 const ACT_H: f32 = 118.0;
+/// An act's title, set giant in the display face.
+const ACT_TITLE_PX: f32 = 36.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Caret {
@@ -706,8 +708,26 @@ fn act_row(
 
     // opens like any new block, without the spring
     let grow = if raw < 0.999 { anim::ease_out_expo(raw).max(0.0) } else { 1.0 };
-    let (slot, _) = ui.allocate_exact_size(Vec2::new(col.width(), ACT_H * grow), Sense::hover());
-    let band = Rect::from_min_size(slot.min, Vec2::new(col.width(), ACT_H));
+    // a long title wraps: the band grows by every line past the first, so
+    // nothing runs into the rule under it or the scene after it
+    let extra = {
+        let words = if doc.blocks[i].text.is_empty() { act_title(number) } else { doc.blocks[i].text.clone() };
+        let mut job = egui::text::LayoutJob::single_section(
+            words.to_uppercase(),
+            egui::TextFormat {
+                font_id: theme::font_display(ACT_TITLE_PX),
+                extra_letter_spacing: -0.5,
+                ..Default::default()
+            },
+        );
+        job.wrap.max_width = col.width() - GUTTER - 28.0;
+        let g = ctx.fonts(|f| f.layout_job(job));
+        let row = g.rows.first().map(|r| r.rect.height()).unwrap_or(0.0);
+        g.rows.len().saturating_sub(1) as f32 * row
+    };
+    let band_h = ACT_H + extra;
+    let (slot, _) = ui.allocate_exact_size(Vec2::new(col.width(), band_h * grow), Sense::hover());
+    let band = Rect::from_min_size(slot.min, Vec2::new(col.width(), band_h));
     let clip = slot.intersect(ui.clip_rect());
     let painter = ui.painter().with_clip_rect(clip);
     if raw < 0.999 {
@@ -752,7 +772,7 @@ fn act_row(
     );
 
     // ---- the title: still just text, set giant ----
-    let font = theme::font_display(36.0);
+    let font = theme::font_display(ACT_TITLE_PX);
     let ink = a(p.text, 1.0);
     // uppercase for show, one character for one, so the caret still lands
     // where the text says it does
@@ -781,7 +801,7 @@ fn act_row(
         job
     };
     let mut layouter = |ui: &egui::Ui, text: &str, wrap: f32| ui.fonts(|f| f.layout_job(job(text, ink, wrap)));
-    let title_rect = Rect::from_min_size(Pos2::new(left, band.top() + 46.0), Vec2::new(title_w, 46.0));
+    let title_rect = Rect::from_min_size(Pos2::new(left, band.top() + 46.0), Vec2::new(title_w, 46.0 + extra));
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(title_rect)

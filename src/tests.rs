@@ -1036,3 +1036,30 @@ fn a_chosen_shortcut_is_kept_only_while_it_differs_from_the_default() {
     assert!(refuse(Modifiers::ALT, Key::ArrowUp, false).is_some());
     assert!(refuse(Modifiers::COMMAND | Modifiers::ALT, Key::D, true).is_none());
 }
+
+#[test]
+fn text_is_cut_to_the_width_it_is_given_not_a_guessed_count() {
+    let ctx = eframe::egui::Context::default();
+    crate::theme::install_fonts(&ctx);
+    let _ = ctx.run(Default::default(), |ctx| {
+        let font = crate::theme::font_display(22.0);
+        let long = "FIFINE AM8 REVIEW - HOW TO INSTANTLY IMPROVE YOUR VOICEOVER AUDIO";
+        let w = |s: &str| crate::theme::tracked_width(ctx, s, font.clone(), 0.0);
+        for room in [60.0, 180.0, 400.0] {
+            let cut = crate::ui::elide_to_width(ctx, long, font.clone(), 0.0, room);
+            assert!(w(&cut) <= room, "{cut:?} is {} wide in {room}", w(&cut));
+            assert!(cut.ends_with('\u{2026}'));
+        }
+        // what fits is left alone
+        assert_eq!(crate::ui::elide_to_width(ctx, "PILOT", font.clone(), 0.0, 400.0), "PILOT");
+        // a title with diacritics is cut between characters, never inside one
+        let ro = "Geabiștii Prime – O noapte sinistră în țară";
+        let cut = crate::ui::elide_to_width(ctx, ro, crate::theme::font_bold(15.0), 0.0, 150.0);
+        let head = cut.trim_end_matches('\u{2026}');
+        assert!(ro.starts_with(head), "{cut:?}");
+        // tracking counts
+        let hud = crate::theme::font_hud(10.5);
+        let cut = crate::ui::elide_to_width(ctx, "5 PAGES / 11 SCENES / SAVED BY YOU", hud.clone(), 0.8, 120.0);
+        assert!(crate::theme::tracked_width(ctx, &cut, hud, 0.8) <= 120.0);
+    });
+}
