@@ -2,8 +2,7 @@
 //! colour, in every script she is in and on every page she prints on. A chosen
 //! colour is a hue kept in the script itself, so the whole team sees the same
 //! one; it is drawn at the theme's own depth, so it reads in any theme and as
-//! ink on paper. Choosing is the team edition's, for now: the desktop shows
-//! chosen colours but does not offer to choose them.
+//! ink on paper.
 
 use eframe::egui::{self, Align, Layout, Pos2, Rect, Sense, Stroke, Vec2};
 
@@ -38,9 +37,9 @@ impl App {
         }
     }
 
-    /// May character colours be chosen here? A team library, colours on.
+    /// May character colours be chosen here? Whenever colours are on.
     pub(super) fn can_choose_voices(&self) -> bool {
-        self.team_edition() && self.settings.character_colors
+        self.settings.character_colors
     }
 
     pub(super) fn open_voice_picker(&mut self, name: &str, at: Pos2) {

@@ -41,7 +41,7 @@ const SNAPSHOT_IDLE: Duration = Duration::from_millis(700);
 
 /// Settings' Team tab, after the seven every library has. Team libraries only.
 const TEAM_TAB: usize = 7;
-/// Settings → Keyboard, on a team library: listed after Writing & saving.
+/// Settings → Keyboard: listed after Writing & saving.
 const KEYS_TAB: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -294,9 +294,11 @@ impl App {
         ctx.set_zoom_factor(settings.font_scale);
 
         let entries = store.list();
-        // A team library opens on its script picker, with nothing open: just
-        // starting the app must not take a script out from under somebody.
-        let home = store.team().is_some();
+        // The app opens on its script picker, with nothing open: on a team,
+        // just starting the app must not take a script out from under
+        // somebody. Only a first run, with no scripts yet, goes straight to
+        // writing.
+        let home = store.team().is_some() || !entries.is_empty();
         let (doc, path) = match entries.first() {
             Some(_) if home => (starter_document(), None),
             Some(e) => match store.load(&e.path) {
@@ -387,7 +389,7 @@ impl App {
             arrivals: Vec::new(),
         };
 
-        if app.path.is_none() && app.store.team().is_none() {
+        if app.path.is_none() && !app.home && app.store.team().is_none() {
             // first run: put the starter script in the library
             app.create_current();
             app.refresh_entries();
@@ -1315,7 +1317,7 @@ impl App {
         let p = pal();
         ui.spacing_mut().item_spacing.x = 3.0;
         let current = self.ed.current_element(&self.doc);
-        let acts = self.team_edition() && self.can_write();
+        let acts = self.can_write();
         let wide = room > 400.0 + 110.0 + 120.0 + if acts { 104.0 } else { 0.0 };
         let mut wanted: Option<Element> = None;
         if wide {
@@ -3032,7 +3034,7 @@ impl App {
                         }
                     }
                     ui::separator(ui);
-                    if team && write && ui::menu_item(ui, &mut rects, "New act", Icon::Star4, false) {
+                    if write && ui::menu_item(ui, &mut rects, "New act", Icon::Star4, false) {
                         if self.guard_edit() {
                             self.new_act();
                         }
@@ -3471,8 +3473,8 @@ impl App {
             ("YouTrack", Icon::External, 5),
             ("About", Icon::Info, 6),
         ];
+        tabs.insert(5, ("Keyboard", Icon::Keyboard, KEYS_TAB));
         if self.store.team().is_some() {
-            tabs.insert(5, ("Keyboard", Icon::Keyboard, KEYS_TAB));
             tabs.push(("Team", Icon::Users, TEAM_TAB));
         }
         let tabs = tabs;
@@ -3795,9 +3797,7 @@ impl App {
                 if ui::toggle_row(ui, "…in Reading mode too", "", &mut v) {
                     self.settings.character_colors_reading = v;
                 }
-                if self.team_edition() {
-                    self.colour_mode_settings(ui);
-                }
+                self.colour_mode_settings(ui);
                 if !self.settings.custom_colors {
                 ui.horizontal(|ui| {
                     // a live sample of the first few speakers
@@ -4037,13 +4037,10 @@ impl App {
         }
     }
 
-    /// What the shortcuts can reach here. A new act is the team edition's,
-    /// for now; without it, Ctrl+Shift+Enter is the plainer Ctrl+Enter.
+    /// What the shortcuts can reach: everything, on the desktop and in a
+    /// browser alike.
     fn commands(&self) -> Vec<keys::Command> {
-        keys::Command::ALL
-            .into_iter()
-            .filter(|c| *c != keys::Command::NewAct || self.team_edition())
-            .collect()
+        keys::Command::ALL.to_vec()
     }
 
     /// The chord shown for a command in a tooltip: yours, or its default.
@@ -4109,7 +4106,7 @@ impl App {
                 }
             }
             C::NewAct => {
-                if self.team_edition() && self.guard_edit() {
+                if self.guard_edit() {
                     self.new_act();
                 }
             }
@@ -4194,13 +4191,6 @@ impl App {
                 }
             }
         }
-    }
-
-    /// A team library, in the browser: where acts and chosen character
-    /// colours can be made, for now. The desktop shows them in any script
-    /// that has them, but does not make them.
-    fn team_edition(&self) -> bool {
-        self.store.team().is_some()
     }
 
     /// May anything be written to this library at all? Viewers on a team may

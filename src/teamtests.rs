@@ -439,7 +439,34 @@ fn every_team_panel_draws_in_every_theme() {
 }
 
 #[test]
-fn the_desktop_has_no_team_and_no_picker() {
+fn the_desktop_opens_on_its_picker_once_it_has_scripts() {
+    let _g = crate::tests::sandbox("desk-home");
+    // a library with scripts in it opens on Home, and opens nothing
+    let lib = storage::scripts_dir();
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(lib.join("pilot.md"), storage::to_markdown(&script("Pilot", "Phones ring."))).unwrap();
+    let before = std::fs::read(lib.join("pilot.md")).unwrap();
+    let ctx = egui::Context::default();
+    let _ = ctx.run(screen(), |_| {});
+    let mut app = App::with_context(&ctx);
+    assert!(app.is_home());
+    assert!(app.path().is_none());
+    for _ in 0..3 {
+        let _ = ctx.run(screen(), |c| app.frame(c));
+    }
+    assert_eq!(app.debug_home_order(), vec![lib.join("pilot.md")]);
+    app.debug_open_from_home(lib.join("pilot.md"));
+    let _ = ctx.run(screen(), |c| app.frame(c));
+    assert!(!app.is_home());
+    assert_eq!(app.doc().meta.title, "Pilot");
+    app.debug_go_home();
+    let _ = ctx.run(screen(), |c| app.frame(c));
+    assert!(app.is_home());
+    assert_eq!(std::fs::read(lib.join("pilot.md")).unwrap(), before, "looking is not writing");
+}
+
+#[test]
+fn the_desktop_has_no_team_and_a_first_run_goes_straight_to_writing() {
     let _g = crate::tests::sandbox("no-team");
     let ctx = egui::Context::default();
     let _ = ctx.run(screen(), |_| {});

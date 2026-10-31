@@ -863,14 +863,20 @@ fn the_export_window_exports_the_pages_asked_for() {
 }
 
 #[test]
-fn the_desktop_makes_no_acts_and_ctrl_shift_enter_is_still_a_new_scene() {
+fn the_desktop_makes_acts_as_the_web_does() {
     let mut h = Harness::new();
     h.load(three_scenes());
     let in_first = h.app.doc().blocks[2].id;
     h.focus(in_first);
     h.press(Key::Enter, Modifiers::COMMAND | Modifiers::SHIFT);
-    assert!(h.app.doc().acts().is_empty(), "acts are made on a team library only, for now");
-    assert_eq!(h.app.doc().scenes().len(), 4, "the chord does what it always did");
+    let acts: Vec<String> = h.app.doc().acts().iter().map(|a| a.title.clone()).collect();
+    assert_eq!(acts, ["ACT ONE"]);
+    assert_eq!(h.app.doc().scenes().len(), 3, "no scene was made or lost");
+    // and it reaches the file as a level-one heading
+    h.app.debug_save();
+    let path = h.app.path().unwrap();
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(text.contains("\n# ACT ONE\n"), "{text}");
 }
 
 #[test]
@@ -901,18 +907,24 @@ fn a_script_with_acts_shows_them_everywhere_on_the_desktop_too() {
 }
 
 #[test]
-fn the_desktop_offers_no_colour_picker() {
+fn the_desktop_chooses_character_colours_as_the_web_does() {
     let mut h = Harness::with(1320.0, 900.0, "character_colors = yes\nshow_cast = yes\n");
-    let mut d = three_scenes();
-    d.meta.set_voice("DETECTIVE COLE", Some(200));
-    h.load(d);
+    h.load(three_scenes());
     h.app.debug_open_voice_picker("DETECTIVE COLE");
     h.frames(2);
-    assert!(!h.app.debug_voice_picker_open(), "choosing colours is the team edition's, for now");
-    // a colour chosen on the web only shows once Custom is on
+    assert!(h.app.debug_voice_picker_open());
+    h.app.debug_set_voice("DETECTIVE COLE", Some(200));
+    h.frames(2);
+    assert!(h.app.settings().custom_colors, "choosing a colour turns Custom on");
     let voices = h.app.debug_voices().unwrap();
-    assert_eq!(voices["DETECTIVE COLE"], crate::theme::character_colors(&["DETECTIVE COLE".to_string()], 0)["DETECTIVE COLE"]);
-    h.app.debug_open_settings(2);
-    h.frames(3);
-    assert!(!h.app.settings().custom_colors);
+    assert_eq!(voices["DETECTIVE COLE"], crate::theme::voice_of_hue(200));
+    h.app.debug_save();
+    let text = std::fs::read_to_string(h.app.path().unwrap()).unwrap();
+    assert!(text.contains("voices: DETECTIVE COLE=200"), "{text}");
+    // the Colour and Keyboard tabs are there
+    for tab in [2, 8] {
+        h.app.debug_open_settings(tab);
+        h.frames(3);
+        assert_eq!(h.app.debug_settings_tab(), tab);
+    }
 }

@@ -1,9 +1,8 @@
-//! Home: the script picker a team library opens on.
+//! Home: the script picker the app opens on, with a library of scripts in it.
 //!
-//! The same islands on the same glass as the rest of the app: a greeting
-//! straight on the glass, the script you were last on as one wide island, and
-//! every other script as a card of its own, with who saved it last and who is
-//! in it now. The desktop never shows it; its library rail does this job.
+//! A greeting, the script you were last on as one wide card, and every other
+//! script as a card of its own. On a team, each card also says who saved it
+//! last and who is in it now.
 
 use std::path::PathBuf;
 
@@ -77,9 +76,7 @@ impl App {
 
     fn home_body(&mut self, ui: &mut egui::Ui) {
         let p = pal();
-        let Some(team) = self.store.team().cloned() else {
-            return;
-        };
+        let team = self.store.team().cloned();
         let w = ui.available_width();
 
         // ---- the greeting, straight on the glass ----
@@ -87,19 +84,29 @@ impl App {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.spacing_mut().item_spacing.y = 2.0;
+                let hello = match team.as_ref().map(|t| t.me.first_name().to_string()).or_else(local_name) {
+                    Some(name) => format!("{}, {name}", greeting()),
+                    None => greeting().to_string(),
+                };
                 ui.label(
-                    egui::RichText::new(format!("{}, {}", greeting(), team.me.first_name()))
+                    egui::RichText::new(hello)
                         .font(theme::font_semi(theme::T_TITLE))
                         .color(p.text),
                 );
-                let people = team.members.iter().filter(|m| !m.pending).count().max(1);
+                let about = match &team {
+                    Some(team) => {
+                        let people = team.members.iter().filter(|m| !m.pending).count().max(1);
+                        format!(
+                            "{} · {} · {}",
+                            team.name,
+                            plural(self.entries.len(), "script", "scripts"),
+                            plural(people, "person", "people"),
+                        )
+                    }
+                    None => format!("Your library · {}", plural(self.entries.len(), "script", "scripts")),
+                };
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{} · {} · {}",
-                        team.name,
-                        plural(self.entries.len(), "script", "scripts"),
-                        plural(people, "person", "people"),
-                    ))
+                    egui::RichText::new(about)
                     .font(theme::font(theme::T_SM))
                     .color(p.text_dim),
                 );
@@ -115,7 +122,7 @@ impl App {
                         self.start_import();
                     }
                 }
-                if ui::icon_button(ui, Icon::Trash, "Recently deleted", 30.0) {
+                if team.is_some() && ui::icon_button(ui, Icon::Trash, "Recently deleted", 30.0) {
                     self.toggle_popover(Popover::Trash);
                 }
             });
@@ -126,7 +133,11 @@ impl App {
         let search = ui.add(
             egui::TextEdit::singleline(&mut self.home_search)
                 .id(egui::Id::new("ns-home-search"))
-                .hint_text("Search the team's scripts  ·  Ctrl+F")
+                .hint_text(if team.is_some() {
+                    "Search the team's scripts  ·  Ctrl+F"
+                } else {
+                    "Search your scripts  ·  Ctrl+F"
+                })
                 .desired_width(w.min(380.0))
                 .margin(egui::Margin::symmetric(12.0, 8.0)),
         );
@@ -157,11 +168,14 @@ impl App {
         }
 
         // ---- where you left off ----
-        let me = team.me.clone();
+        let me = team.as_ref().map(|t| t.me.clone());
         if needle.is_empty() {
             let mine = list
                 .iter()
-                .find(|e| e.edited_by.as_ref().map(|b| b.id == me.id).unwrap_or(false))
+                .find(|e| match (&me, &e.edited_by) {
+                    (Some(me), Some(by)) => by.id == me.id,
+                    _ => false,
+                })
                 .or_else(|| list.first())
                 .cloned();
             if let Some(e) = mine {
@@ -178,7 +192,7 @@ impl App {
         let mut menu = None;
         for (label, icon, items) in [
             ("Starred", Icon::StarFilled, &starred),
-            ("Team scripts", Icon::File, &rest),
+            (if team.is_some() { "Team scripts" } else { "Scripts" }, Icon::File, &rest),
         ] {
             if items.is_empty() {
                 continue;
@@ -587,6 +601,20 @@ fn greeting() -> &'static str {
         18..=22 => "Good evening",
         _ => "Up late",
     }
+}
+
+/// The name to greet you by on the desktop: your account's, first name only.
+fn local_name() -> Option<String> {
+    if crate::WEB {
+        return None;
+    }
+    let raw = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).ok()?;
+    let first = raw.split(['.', '_', '-', ' ']).next()?.trim();
+    if first.is_empty() || first == "root" || !first.chars().all(|c| c.is_alphabetic()) {
+        return None;
+    }
+    let mut c = first.chars();
+    Some(c.next()?.to_uppercase().collect::<String>() + &c.as_str().to_lowercase())
 }
 
 fn plural(n: usize, one: &str, many: &str) -> String {
