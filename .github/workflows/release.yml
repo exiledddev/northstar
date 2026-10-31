@@ -1,0 +1,74 @@
+name: Release
+
+# Push a tag like v2.1.0 and this builds Blackline for Linux and Windows and
+# attaches both to a GitHub Release for that tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux build
+    # the oldest supported runner, so the binary runs on older glibc too
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        run: |
+          name="blackline-${GITHUB_REF_NAME}-linux-x86_64"
+          mkdir -p "$name/packaging"
+          cp target/release/blackline install.sh README.md LICENSE "$name/"
+          cp packaging/blackline.desktop packaging/blackline.svg "$name/packaging/"
+          tar -czf "$name.tar.gz" "$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: blackline-*.tar.gz
+
+  windows:
+    name: Windows build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "blackline-$env:GITHUB_REF_NAME-windows-x86_64"
+          New-Item -ItemType Directory -Path $name | Out-Null
+          Copy-Item target/release/blackline.exe, README.md, LICENSE -Destination $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: blackline-*.zip
+
+  publish:
+    name: GitHub Release
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            blackline-*.tar.gz
+            blackline-*.zip
+          generate_release_notes: true

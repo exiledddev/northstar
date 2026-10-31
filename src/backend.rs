@@ -486,7 +486,7 @@ mod local {
         }
 
         fn open_url(&mut self, url: &str) {
-            let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+            storage::open_target(std::ffi::OsStr::new(url));
         }
 
         fn reveal(&mut self, key: Option<&Path>) {

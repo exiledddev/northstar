@@ -53,8 +53,17 @@ use crate::model::{Block, Document, Element, Meta};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::settings::Settings;
 
+/// Where per-user data lives: `~/.local/share` on Linux, `%APPDATA%` on
+/// Windows. `XDG_DATA_HOME` is honoured everywhere when it is set to an
+/// absolute path — on Linux that is the standard; elsewhere it lets the tests
+/// keep to a sandbox of their own.
 #[cfg(not(target_arch = "wasm32"))]
 fn data_home() -> PathBuf {
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from) {
+        if x.is_absolute() {
+            return x;
+        }
+    }
     dirs::data_dir().unwrap_or_else(|| {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
@@ -562,19 +571,58 @@ pub fn write_settings(s: &Settings) -> io::Result<()> {
 
 // ---------- the desktop ----------
 
-/// Hand a path to the desktop (Dolphin, Nautilus, default PDF viewer, ...).
+/// A command that runs without flashing a console window on Windows.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn open_with_desktop(path: &Path) {
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+fn quiet(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
 }
 
-/// Open the file manager with `path` selected, where the desktop speaks the
-/// freedesktop FileManager1 interface. KDE's Dolphin, Nautilus and Nemo all do.
-/// Falls back to simply opening the containing folder.
+/// Hand a path or a web address to the desktop: the default app for it
+/// (Dolphin, Nautilus, a PDF viewer, the browser...).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_with_desktop(path: &Path) {
+    open_target(path.as_os_str());
+}
+
+/// The same, for anything the desktop can open: a file, a folder or a URL.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_target(target: &std::ffi::OsStr) {
+    #[cfg(windows)]
+    let _ = quiet("explorer").arg(target).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = quiet("open").arg(target).spawn();
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let _ = quiet("xdg-open").arg(target).spawn();
+}
+
+/// Open the file manager with `path` selected: Explorer on Windows; on Linux,
+/// where the desktop speaks the freedesktop FileManager1 interface (KDE's
+/// Dolphin, Nautilus and Nemo all do). Falls back to simply opening the
+/// containing folder.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn reveal_in_file_manager(path: &Path) {
+    #[cfg(windows)]
+    {
+        let mut select = std::ffi::OsString::from("/select,");
+        select.push(path.as_os_str());
+        let _ = quiet("explorer").arg(select).spawn();
+    }
+    #[cfg(not(windows))]
+    reveal_freedesktop(path);
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
+fn reveal_freedesktop(path: &Path) {
     let uri = format!("file://{}", path.display());
-    let spoke = std::process::Command::new("dbus-send")
+    let spoke = quiet("dbus-send")
         .args([
             "--session",
             "--print-reply",
@@ -596,10 +644,31 @@ pub fn reveal_in_file_manager(path: &Path) {
     }
 }
 
-/// Ask the desktop for a file to import. KDE's own dialog where there is one,
-/// GNOME's otherwise. Blocks, so call it off the UI thread. `None` if the
-/// dialog was cancelled or neither tool is installed.
-#[cfg(not(target_arch = "wasm32"))]
+/// Ask the desktop for a file to import: Windows' own open dialog; on Linux,
+/// KDE's dialog where there is one, GNOME's otherwise. Blocks, so call it off
+/// the UI thread. `None` if the dialog was cancelled.
+#[cfg(windows)]
+pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
+    // the stock Windows Forms dialog, through PowerShell, which every Windows
+    // since 7 has: no extra dependency for one dialog
+    let script = "Add-Type -AssemblyName System.Windows.Forms; \
+        $d = New-Object System.Windows.Forms.OpenFileDialog; \
+        $d.Title = 'Import a screenplay'; \
+        $d.Filter = 'Screenplays|*.fountain;*.spmd;*.fdx;*.md;*.txt|All files|*.*'; \
+        if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write($d.FileName) }";
+    let out = quiet("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-STA", "-Command", script])
+        .output()
+        .map_err(|e| format!("Could not open the file dialog ({e}) — drop the file onto the window instead."))?;
+    let picked = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if out.status.success() && !picked.is_empty() {
+        Some(PathBuf::from(picked))
+    } else {
+        None
+    })
+}
+
+#[cfg(all(not(target_arch = "wasm32"), not(windows)))]
 pub fn pick_file_to_import() -> Result<Option<PathBuf>, String> {
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let tries: [(&str, Vec<String>); 2] = [

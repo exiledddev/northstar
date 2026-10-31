@@ -1,13 +1,15 @@
 # Blackline
 
-**A screenwriting studio for Linux.** By NativeCompute.
+**A screenwriting studio for Linux and Windows, and for teams in the
+browser.** Free and open source, by NativeCompute.
 
 It behaves like a notes app — open it, type, it saves itself — but every
 paragraph is a typed screenplay element, laid out to standard master-scene
 geometry and exportable as a print-ready PDF, a Final Draft file or Fountain.
 
-Scripts are stored as plain markdown in `~/.local/share/blackline/scripts`, so
-your work stays greppable, diffable, and yours. A library made when the app
+Scripts are stored as plain markdown — in `~/.local/share/blackline/scripts`
+on Linux, `%APPDATA%\Blackline\scripts` on Windows — so your work stays
+greppable, diffable, and yours. A library made when the app
 was called Northstar (`~/.local/share/northstar`) is used where it is: nothing
 is moved, copied or rewritten.
 
@@ -26,6 +28,20 @@ look, in a dark cast and a light one.
 ---
 
 ## Installing
+
+### From a release
+
+Download the latest build from
+[Releases](https://github.com/exiledddev/northstar/releases):
+
+- **Linux** — `blackline-<version>-linux-x86_64.tar.gz`. Unpack it and run
+  `./install.sh` inside. It installs the binary to `~/.local/bin`, adds a
+  launcher entry and icon, and copies your library aside first (see below).
+  Nothing is built and nothing is installed with `apt`.
+- **Windows** — `blackline-<version>-windows-x86_64.zip`. Unpack it anywhere
+  and run `blackline.exe`. Your scripts live in `%APPDATA%\Blackline`.
+
+### From source (Linux)
 
 Written for **Pop!\_OS, Debian and Ubuntu** (22.04 and later), on **KDE
 Plasma** or GNOME.
@@ -65,7 +81,8 @@ Before every install it also copies your whole library (scripts, snapshots,
 settings) to `~/.local/share/blackline-backup-<date>`. It only copies: nothing
 in your library is moved or changed. Delete old copies whenever you like.
 
-**Uninstalling:** `./install.sh --uninstall`. Your scripts stay in
+**Uninstalling:** `./install.sh --uninstall` on Linux; on Windows, delete the
+folder you unpacked. Your scripts stay in
 `~/.local/share/blackline`.
 
 Fonts need nothing extra: Anybody (the interface), JetBrains Mono (readouts)
@@ -277,8 +294,9 @@ whole script.
 
 **Import** — the arrow beside *New script*, the `⋯` menu, dropping a file onto
 the window, or `blackline some-file.fountain` — reads Fountain, Final Draft
-and Blackline markdown into a new script. The file picker is KDE's own dialog
-(`kdialog`) where there is one, GNOME's (`zenity`) otherwise.
+and Blackline markdown into a new script. The file picker is Windows' own on
+Windows; on Linux, KDE's dialog (`kdialog`) where there is one, GNOME's
+(`zenity`) otherwise.
 
 **Snapshots** (`⋯` → *Take a snapshot* / *Snapshots…*) put a dated copy of the
 script aside. Restoring one asks first, and keeps what was there as a snapshot
@@ -371,6 +389,16 @@ The app opens on **Home**, a picker of your scripts: Continue writing, your
 starred scripts, then the rest as cards. Only a team needs a server; on the
 desktop, Home is your own library. Scripts without acts or chosen colours are
 written exactly as before.
+
+---
+
+## Contributing
+
+Blackline is open source under the MIT licence, and contributions are
+welcome: bug reports, fixes, features and translations of the docs. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md); security problems go through
+[SECURITY.md](SECURITY.md), not the public tracker. Everyone taking part
+follows the [code of conduct](CODE_OF_CONDUCT.md).
 
 ---
 

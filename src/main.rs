@@ -6,6 +6,9 @@
 //!
 //! NativeCompute.
 
+// A release build on Windows is a window app, with no console behind it.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 use blackline::{app, logo, splash, storage, theme};
 
 fn main() -> eframe::Result<()> {

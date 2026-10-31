@@ -4,6 +4,9 @@
 #
 #   ./install.sh              build and install (or upgrade in place)
 #   ./install.sh --uninstall  remove the app; your scripts are left alone
+#
+# Run from a release download (the `blackline` binary sits next to this
+# script, with no source), it installs that binary and builds nothing.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +47,16 @@ if [ "${1:-}" = "--uninstall" ]; then
   exit 0
 fi
 
+# A release download carries the binary; a checkout of the source builds it.
+PREBUILT=0
+if [ -x "$here/blackline" ] && [ ! -f "$here/Cargo.toml" ]; then
+  PREBUILT=1
+  BUILT="$here/blackline"
+else
+  BUILT="target/release/blackline"
+fi
+
+if [ "$PREBUILT" = 0 ]; then
 # ---- build dependencies -------------------------------------------------
 PKGS=(
   build-essential pkg-config
@@ -85,6 +98,7 @@ fi
 # ---- build --------------------------------------------------------------
 say "Building (this takes a few minutes the first time)"
 cargo build --release
+fi
 
 # ---- keep a copy of the library ----------------------------------------
 # Before a new build goes in, the whole library (scripts, snapshots,
@@ -100,7 +114,7 @@ fi
 # ---- install ------------------------------------------------------------
 mkdir -p "$BIN_DIR" "$APP_DIR" "$ICON_DIR"
 remove_northstar
-install -m 755 target/release/blackline "$BIN_DIR/blackline"
+install -m 755 "$BUILT" "$BIN_DIR/blackline"
 install -m 644 packaging/blackline.desktop "$APP_DIR/blackline.desktop"
 
 # The launcher icon is drawn by the same code as the mark inside the app, so
@@ -117,7 +131,4 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
   echo '    export PATH="$HOME/.local/bin:$PATH"'
 fi
 say "Scripts live in $DATA_DIR/scripts"
-if [ -f "$HOME/.local/share/tesseract/settings.conf" ]; then
-  say "Tesseract found — Blackline will wear the same theme (Settings → Match Tesseract)."
-fi
 say "Launch it from the application menu, or run: blackline"
